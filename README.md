@@ -9,8 +9,16 @@ almacenan en SQLite y el sitio público consume JSON estático desde `web/data/`
 - `src/RadarOfertasMultinucleo/`: aplicación .NET y contratos de las seis etapas.
 - `src/RadarOfertasMultinucleo/config.json`: modo, trabajadores, colas y límites.
 - `src/RadarOfertasMultinucleo/Infrastructure/Database/001_esquema_inicial.sql`:
-  esquema relacional inicial. El archivo debe aplicarse al crear `data/radar.db`.
+  esquema relacional inicial, aplicado automáticamente al inicializar `data/radar.db`.
 - `web/`: sitio estático publicado por GitHub Pages.
+
+## Documentación del equipo
+
+- [Acta y roles](docs/acta.md)
+- [Seguimiento de reuniones](docs/seguimiento.md)
+- [ADRs](docs/adr/)
+- [Cambios de diseño](docs/cambios-diseno.md)
+- [Bitácora de IA](docs/bitacora-ia.md)
 
 El catálogo se descubre dinámicamente desde OpenCritic y Steam. El flujo de este
 hito captura metadatos, ratings y plataformas; todavía no integra fuentes de
