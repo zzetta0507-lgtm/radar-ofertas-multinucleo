@@ -63,6 +63,7 @@ public sealed record ParsedCandidate(
 
 public sealed record MatchedOffer(
     Guid GameId,
+    string MatchedCanonicalTitle,
     ParsedCandidate Candidate,
     double Similarity,
     bool IsUncertain,
@@ -84,4 +85,11 @@ public sealed record PersistedOffer(
     decimal? Rating,
     string? CoverImageUrl,
     IReadOnlyList<string> Platforms,
-    DateTimeOffset CapturedAt);
+    DateTimeOffset CapturedAt,
+    double MatchingSimilarity,
+    bool IsUncertainMatch);
+
+public sealed record TitleMatchCandidate(
+    Guid GameId,
+    string CanonicalTitle,
+    IReadOnlyList<string> DifficultCaseTags);

@@ -46,6 +46,9 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
     private static readonly Regex EditionRegex = new(
         """\b(remaster(?:ed)?|remake|definitive|deluxe|goty|game of the year|complete edition|director['’]s cut|ultimate edition|collection)\b""",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex DlcOrBundleRegex = new(
+        """\b(DLC|expansion|season pass|bundle|pack)\b""",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex RomanNumeralRegex = new(
         """(?<![\p{L}\d])(?:II|III|IV|V|VI|VII|VIII|IX|X)(?![\p{L}\d])""",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -68,15 +71,18 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
     private readonly PipelineOptions _options;
     private readonly SqliteCatalogRepository _repository;
     private readonly ReplayableHttpClient _http;
+    private readonly TitleCandidatePool _titleCandidates;
 
     public OpenCriticDiscoveryStage(
         PipelineOptions options,
         SqliteCatalogRepository repository,
-        ReplayableHttpClient http)
+        ReplayableHttpClient http,
+        TitleCandidatePool titleCandidates)
     {
         _options = options;
         _repository = repository;
         _http = http;
+        _titleCandidates = titleCandidates;
     }
 
     public async Task<IReadOnlyList<GameRecord>> DiscoverAsync(CancellationToken cancellationToken)
@@ -118,11 +124,12 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
             .Where(location => location.Contains("/sitemap_games_", StringComparison.Ordinal))
             .ToArray();
 
+        var allGameUrls = new List<string>();
         foreach (var sitemapUrl in gameSitemaps)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var sitemap = XDocument.Parse(await _http.GetStringAsync(new Uri(sitemapUrl), cancellationToken));
-            var gameUrls = sitemap
+            allGameUrls.AddRange(sitemap
                 .Descendants()
                 .Where(node => node.Name.LocalName == "loc")
                 .Select(node => node.Value)
@@ -130,42 +137,46 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
                 {
                     var uri = new Uri(location);
                     return GamePathRegex.IsMatch(uri.AbsolutePath);
-                });
+                }));
+        }
 
-            foreach (var gameUrl in gameUrls)
+        _titleCandidates.ReplaceFromSitemapUrls(
+            allGameUrls.Distinct(StringComparer.Ordinal),
+            Math.Max(_options.CatalogMinGames, _options.CatalogMinGames * 2));
+
+        foreach (var gameUrl in allGameUrls)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (pageCount >= _options.CatalogMaxPages ||
+                (discovered.Count >= _options.CatalogMinGames &&
+                 hardCases >= _options.CatalogMinDifficultCases &&
+                 platformFamilies.Count >= 3))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (pageCount >= _options.CatalogMaxPages ||
-                    (discovered.Count >= _options.CatalogMinGames &&
-                     hardCases >= _options.CatalogMinDifficultCases &&
-                     platformFamilies.Count >= 3))
-                {
-                    break;
-                }
+                break;
+            }
 
-                var gameUri = new Uri(gameUrl);
-                var pathMatch = GamePathRegex.Match(gameUri.AbsolutePath);
-                var openCriticId = pathMatch.Groups["id"].Value;
-                if (!visitedIds.Add(openCriticId))
-                {
-                    continue;
-                }
+            var gameUri = new Uri(gameUrl);
+            var pathMatch = GamePathRegex.Match(gameUri.AbsolutePath);
+            var openCriticId = pathMatch.Groups["id"].Value;
+            if (!visitedIds.Add(openCriticId))
+            {
+                continue;
+            }
 
-                pageCount++;
-                var page = await _http.GetStringAsync(gameUri, cancellationToken);
-                var game = ParseOpenCriticGame(openCriticId, gameUrl, page);
-                if (game is null)
-                {
-                    continue;
-                }
+            pageCount++;
+            var page = await _http.GetStringAsync(gameUri, cancellationToken);
+            var game = ParseOpenCriticGame(openCriticId, gameUrl, page);
+            if (game is null)
+            {
+                continue;
+            }
 
-                await SaveAndPublishAsync(game, discovered, publish, cancellationToken);
-                normalizedTitles.Add(NormalizeTitle(game.CanonicalTitle));
-                hardCases += game.DifficultCaseTags.Count > 0 ? 1 : 0;
-                foreach (var platform in game.Platforms)
-                {
-                    platformFamilies.Add(GetPlatformFamily(platform));
-                }
+            await SaveAndPublishAsync(game, discovered, publish, cancellationToken);
+            normalizedTitles.Add(NormalizeTitle(game.CanonicalTitle));
+            hardCases += game.DifficultCaseTags.Count > 0 ? 1 : 0;
+            foreach (var platform in game.Platforms)
+            {
+                platformFamilies.Add(GetPlatformFamily(platform));
             }
 
             if (pageCount >= _options.CatalogMaxPages ||
@@ -199,9 +210,6 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
                 $"Se requieren {_options.CatalogMinGames}, {_options.CatalogMinDifficultCases} y 3.");
         }
 
-        Console.WriteLine(
-            $"Descubrimiento: {discovered.Count} juegos, {hardCases} casos difíciles, " +
-            $"{platformFamilies.Count} familias de plataforma.");
     }
 
     private async Task ImportSteamPagesAsync(
@@ -367,6 +375,11 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
             tags.Add("edicion_o_remaster");
         }
 
+        if (DlcOrBundleRegex.IsMatch(title))
+        {
+            tags.Add("dlc_o_bundle");
+        }
+
         if (RomanNumeralRegex.IsMatch(title))
         {
             tags.Add("numero_romano");
@@ -434,7 +447,7 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
         return platform;
     }
 
-    private static Guid StableGuid(string value)
+    internal static Guid StableGuid(string value)
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
         return new Guid(bytes.AsSpan(0, 16));

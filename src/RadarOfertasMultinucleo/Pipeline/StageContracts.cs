@@ -28,6 +28,8 @@ public interface IParseStage
 
 public interface IMatchStage
 {
+    void ConfigureParallelism(int maxDegreeOfParallelism);
+
     Task<MatchedOffer?> MatchAsync(
         ParsedCandidate candidate,
         CancellationToken cancellationToken);

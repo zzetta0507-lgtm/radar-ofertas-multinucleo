@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
@@ -120,11 +121,46 @@ public sealed class OpenCriticParseStage : IParseStage
 
 public sealed class TitleMatchingStage : IMatchStage
 {
-    private readonly double _threshold;
+    private static readonly Regex EditionSuffixRegex = new(
+        """(?:\s+(?:remastered|remaster|definitive(?:\s+edition)?|deluxe(?:\s+edition)?|goty|game\s+of\s+the\s+year(?:\s+edition)?|complete(?:\s+edition)?|ultimate(?:\s+edition)?|enhanced(?:\s+edition)?|edition))+$""",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex PlatformSuffixRegex = new(
+        """(?:\s+(?:for\s+)?(?:pc|steam|ps[345]|playstation(?:\s+[345])?|xbox(?:\s+(?:one|series\s+[xs]))?|nintendo\s+switch|switch))+$""",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex PunctuationRegex = new(
+        """[^\p{L}\p{N}\s]""",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex ApostropheRegex = new(
+        """['’]""",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex WhitespaceRegex = new(
+        """\s+""",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex InstallmentRegex = new(
+        """(?:^|\s)(?<installment>[0-9]+|II|III|IV|V|VI|VII|VIII|IX|X)$""",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex DifficultCaseRegex = new(
+        """\b(remaster(?:ed)?|remake|definitive|deluxe|goty|edition|dlc|expansion|season pass|bundle|pack|collection|II|III|IV|V|VI|VII|VIII|IX|X)\b""",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-    public TitleMatchingStage(double threshold)
+    private readonly double _threshold;
+    private readonly TitleCandidatePool _titleCandidates;
+    private int _maxDegreeOfParallelism = 1;
+
+    public TitleMatchingStage(double threshold, TitleCandidatePool titleCandidates)
     {
         _threshold = threshold;
+        _titleCandidates = titleCandidates;
+    }
+
+    public void ConfigureParallelism(int maxDegreeOfParallelism)
+    {
+        if (maxDegreeOfParallelism < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxDegreeOfParallelism));
+        }
+
+        _maxDegreeOfParallelism = maxDegreeOfParallelism;
     }
 
     public Task<MatchedOffer?> MatchAsync(
@@ -132,33 +168,197 @@ public sealed class TitleMatchingStage : IMatchStage
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var left = Normalize(candidate.CanonicalTitle);
-        var right = Normalize(candidate.CandidateTitle);
-        var similarity = Similarity(left, right);
-        if (similarity < _threshold)
+        var title = Normalize(candidate.CandidateTitle);
+        var candidates = _titleCandidates.Snapshot()
+            .Append(new TitleMatchCandidate(
+                candidate.GameId,
+                candidate.CanonicalTitle,
+                DifficultCaseRegex.IsMatch(candidate.CanonicalTitle)
+                    ? new[] { "caso_dificil" }
+                    : Array.Empty<string>()))
+            .DistinctBy(item => item.GameId)
+            .ToArray();
+        var scored = new System.Collections.Concurrent.ConcurrentBag<(TitleMatchCandidate Candidate, double Score)>();
+        Parallel.ForEach(
+            candidates,
+            new ParallelOptions
+            {
+                CancellationToken = cancellationToken,
+                MaxDegreeOfParallelism = _maxDegreeOfParallelism
+            },
+            catalogCandidate =>
+            {
+                var score = Similarity(title, Normalize(catalogCandidate.CanonicalTitle));
+                scored.Add((catalogCandidate, score));
+            });
+
+        var ranked = scored
+            .OrderByDescending(item => item.Score)
+            .ThenBy(item => item.Candidate.GameId)
+            .Take(2)
+            .ToArray();
+        if (ranked.Length == 0 || ranked[0].Score < _threshold)
         {
             return Task.FromResult<MatchedOffer?>(null);
         }
 
+        var best = ranked[0];
+        var ambiguous = ranked.Length > 1 && best.Score - ranked[1].Score < 0.03;
         return Task.FromResult<MatchedOffer?>(new MatchedOffer(
-            candidate.GameId,
+            best.Candidate.GameId,
+            best.Candidate.GameId == candidate.GameId
+                ? candidate.CanonicalTitle
+                : best.Candidate.CanonicalTitle,
             candidate,
-            similarity,
-            similarity - _threshold < 0.05,
+            best.Score,
+            best.Score - _threshold < 0.05 ||
+                ambiguous ||
+                best.Candidate.DifficultCaseTags.Count > 0,
             false,
             null));
     }
 
-    private static string Normalize(string value) =>
-        Regex.Replace(value.ToLowerInvariant(), @"[^\p{L}\p{N}]+", " ").Trim();
-
-    private static double Similarity(string left, string right)
+    public static MatchingValidationReport Validate(
+        IReadOnlyList<MatchingValidationPair> pairs,
+        double threshold)
     {
+        if (pairs.Count < 60)
+        {
+            throw new InvalidDataException(
+                $"La validación de emparejamiento requiere al menos 60 pares; recibió {pairs.Count}.");
+        }
+
+        var truePositives = 0;
+        var falsePositives = 0;
+        var falseNegatives = 0;
+        var misclassified = new List<MatchingValidationError>();
+        foreach (var pair in pairs)
+        {
+            var similarity = Similarity(pair.Left, pair.Right);
+            var predictedMatch = similarity >= threshold;
+            if (predictedMatch && pair.ExpectedMatch)
+            {
+                truePositives++;
+            }
+            else if (predictedMatch)
+            {
+                falsePositives++;
+            }
+            else if (pair.ExpectedMatch)
+            {
+                falseNegatives++;
+            }
+
+            if (predictedMatch != pair.ExpectedMatch)
+            {
+                misclassified.Add(new MatchingValidationError(
+                    pair.Left,
+                    pair.Right,
+                    pair.ExpectedMatch,
+                    predictedMatch,
+                    similarity));
+            }
+        }
+
+        var precision = truePositives + falsePositives == 0
+            ? 0
+            : (double)truePositives / (truePositives + falsePositives);
+        var recall = truePositives + falseNegatives == 0
+            ? 0
+            : (double)truePositives / (truePositives + falseNegatives);
+        return new MatchingValidationReport(
+            pairs.Count,
+            truePositives,
+            falsePositives,
+            falseNegatives,
+            precision,
+            recall,
+            misclassified);
+    }
+
+    public static double Similarity(string left, string right)
+    {
+        left = Normalize(left);
+        right = Normalize(right);
         if (left.Length == 0 || right.Length == 0)
         {
             return left == right ? 1 : 0;
         }
 
+        var leftInstallment = GetInstallment(left);
+        var rightInstallment = GetInstallment(right);
+        if (leftInstallment != rightInstallment &&
+            (leftInstallment is not null || rightInstallment is not null))
+        {
+            return 0.74;
+        }
+
+        var editSimilarity = LevenshteinSimilarity(left, right);
+        var leftTokens = left.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToHashSet(StringComparer.Ordinal);
+        var rightTokens = right.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToHashSet(StringComparer.Ordinal);
+        var diceSimilarity = 2d * leftTokens.Intersect(rightTokens).Count() /
+            (leftTokens.Count + rightTokens.Count);
+        return (editSimilarity * 0.7) + (diceSimilarity * 0.3);
+    }
+
+    private static string Normalize(string value)
+    {
+        var decomposed = value.Normalize(NormalizationForm.FormD);
+        var withoutDiacritics = Regex.Replace(decomposed, @"\p{Mn}", string.Empty);
+        var normalized = ApostropheRegex.Replace(withoutDiacritics.ToLowerInvariant(), string.Empty);
+        normalized = PunctuationRegex.Replace(normalized, " ");
+        normalized = WhitespaceRegex.Replace(normalized, " ").Trim();
+        normalized = PlatformSuffixRegex.Replace(normalized, string.Empty);
+        normalized = EditionSuffixRegex.Replace(normalized, string.Empty);
+        normalized = WhitespaceRegex.Replace(normalized, " ").Trim();
+        var installment = InstallmentRegex.Match(normalized);
+        if (installment.Success &&
+            TryGetRomanValue(installment.Groups["installment"].Value, out var valueNumber))
+        {
+            normalized = normalized[..installment.Groups["installment"].Index] + valueNumber;
+        }
+
+        return normalized;
+    }
+
+    private static string? GetInstallment(string title)
+    {
+        var match = InstallmentRegex.Match(title);
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        return TryGetRomanValue(match.Groups["installment"].Value, out var value)
+            ? value.ToString(CultureInfo.InvariantCulture)
+            : match.Groups["installment"].Value;
+    }
+
+    private static bool TryGetRomanValue(string value, out int number)
+    {
+        if (int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out number))
+        {
+            return true;
+        }
+
+        number = value.ToUpperInvariant() switch
+        {
+            "II" => 2,
+            "III" => 3,
+            "IV" => 4,
+            "V" => 5,
+            "VI" => 6,
+            "VII" => 7,
+            "VIII" => 8,
+            "IX" => 9,
+            "X" => 10,
+            _ => 0
+        };
+        return number != 0;
+    }
+
+    private static double LevenshteinSimilarity(string left, string right)
+    {
         var previous = new int[right.Length + 1];
         var current = new int[right.Length + 1];
         for (var column = 0; column <= right.Length; column++)
@@ -211,7 +411,7 @@ public sealed class SqlitePersistStage : IPersistStage
             observationId,
             offer.GameId,
             candidate.SourceId,
-            candidate.CanonicalTitle,
+            offer.MatchedCanonicalTitle,
             candidate.ProductUrl,
             candidate.CurrentPrice,
             candidate.RegularPrice,
@@ -222,7 +422,9 @@ public sealed class SqlitePersistStage : IPersistStage
             candidate.Rating,
             candidate.CoverImageUrl,
             candidate.Platforms,
-            candidate.RetrievedAt);
+            candidate.RetrievedAt,
+            offer.Similarity,
+            offer.IsUncertain);
     }
 }
 

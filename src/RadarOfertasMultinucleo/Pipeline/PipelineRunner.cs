@@ -32,10 +32,14 @@ public sealed class PipelineRunner
         _publish = publish;
     }
 
-    public Task RunAsync(ExecutionMode mode, CancellationToken cancellationToken) =>
-        mode == ExecutionMode.Sequential
+    public Task RunAsync(ExecutionMode mode, CancellationToken cancellationToken)
+    {
+        _match.ConfigureParallelism(
+            mode == ExecutionMode.Parallel ? _options.WorkersCpu : 1);
+        return mode == ExecutionMode.Sequential
             ? RunSequentialAsync(cancellationToken)
             : RunChannelPipelineAsync(mode, cancellationToken);
+    }
 
     private async Task RunSequentialAsync(CancellationToken cancellationToken)
     {
@@ -123,7 +127,7 @@ public sealed class PipelineRunner
                 channels.ParseToMatch.Writer,
                 pipelineCancellation),
             RunWorkersAsync(
-                mode == ExecutionMode.Parallel ? _options.WorkersCpu : 1,
+                1,
                 () => ChannelStageWorkers.RunMatchWorkerAsync(
                     channels.ParseToMatch.Reader,
                     channels.MatchToPersist.Writer,

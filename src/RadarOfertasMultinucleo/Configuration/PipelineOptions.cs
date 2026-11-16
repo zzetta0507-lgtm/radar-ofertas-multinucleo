@@ -83,6 +83,36 @@ public sealed class PipelineOptions
     [JsonPropertyName("contention_operations")]
     public int ContentionOperations { get; init; }
 
+    public PipelineOptions ForExecution(
+        ExecutionMode mode,
+        int workersIo,
+        int workersCpu,
+        string? databasePath = null) =>
+        new()
+        {
+            Mode = mode,
+            WorkersIo = workersIo,
+            WorkersCpu = workersCpu,
+            QueueSizeStage1 = QueueSizeStage1,
+            QueueSizeStage2 = QueueSizeStage2,
+            QueueSizeStage3 = QueueSizeStage3,
+            QueueSizeStage4 = QueueSizeStage4,
+            QueueSizeStage5 = QueueSizeStage5,
+            MaxConcurrentRequestsPerDomain = MaxConcurrentRequestsPerDomain,
+            DatabasePath = databasePath ?? DatabasePath,
+            MatchingThreshold = MatchingThreshold,
+            DealRule = DealRule,
+            CatalogMinGames = CatalogMinGames,
+            CatalogMinDifficultCases = CatalogMinDifficultCases,
+            CatalogMaxPages = CatalogMaxPages,
+            DomainMinIntervalMilliseconds = DomainMinIntervalMilliseconds,
+            ReplayDirectory = ReplayDirectory,
+            ReplayLatencyFixedMilliseconds = ReplayLatencyFixedMilliseconds,
+            ReplayLatencyJitterMilliseconds = ReplayLatencyJitterMilliseconds,
+            ReplayLatencySeed = ReplayLatencySeed,
+            ContentionOperations = ContentionOperations
+        };
+
     public void Validate()
     {
         if (WorkersIo < 1 || WorkersCpu < 1)

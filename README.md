@@ -26,11 +26,25 @@ dotnet run --project src/RadarOfertasMultinucleo -- --mode concurrent
 dotnet run --project src/RadarOfertasMultinucleo -- --mode parallel --record-replay
 dotnet run --project src/RadarOfertasMultinucleo -- --mode parallel --source replay
 dotnet run --project src/RadarOfertasMultinucleo -- --benchmark-contention
+dotnet run --project src/RadarOfertasMultinucleo -- --validate-matching
+dotnet run --project src/RadarOfertasMultinucleo -- --source replay --run-benchmarks
 ```
 
 `--record-replay` guarda respuestas HTTP en `data/replay/`. El modo replay no
 usa la red y requiere que todas las respuestas estén grabadas. Sus retardos se
 ajustan con `replay_latency_fixed_ms` y `replay_latency_jitter_ms`.
+
+El emparejamiento compara cada título descargado con el conjunto de candidatos
+del catálogo usando similitud propia (Levenshtein y similitud por tokens), y en
+modo `parallel` reparte esas comparaciones con `Parallel.ForEach`. El comando
+`--validate-matching` evalúa 61 pares etiquetados y genera
+`web/data/matching-validation.json`.
+
+`--run-benchmarks` requiere `--source replay`; mide cinco repeticiones por
+configuración, barre trabajadores de E/S y CPU y exporta las observaciones a
+`web/data/benchmarks.json` y `web/data/benchmarks.csv`. No genera predicciones
+teóricas. Los benchmarks miden el pipeline completo, incluida la persistencia,
+con una base SQLite temporal nueva para cada repetición.
 
 El descubrimiento exige los mínimos indicados por `catalog_min_games` y
 `catalog_min_difficult_cases`; si las fuentes no los alcanzan, informa error

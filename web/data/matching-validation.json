@@ -1,0 +1,9 @@
+{
+  "pairCount": 61,
+  "truePositives": 30,
+  "falsePositives": 0,
+  "falseNegatives": 0,
+  "precision": 1,
+  "recall": 1,
+  "misclassifiedPairs": []
+}

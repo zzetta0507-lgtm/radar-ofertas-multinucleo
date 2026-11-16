@@ -34,23 +34,44 @@ internal static class App
                 return 0;
             }
 
-            using var http = new ReplayableHttpClient(
+            var validation = TitleMatchingStage.Validate(
+                MatchingValidationSet.Pairs,
+                options.MatchingThreshold);
+            Console.WriteLine(
+                $"Validación de emparejamiento: {validation.PairCount} pares, " +
+                $"precisión {validation.Precision:P1}, exhaustividad {validation.Recall:P1}.");
+            await WriteMatchingValidationAsync(validation, CancellationToken.None);
+            if (command.ValidateMatching)
+            {
+                if (validation.FalsePositives > 0 || validation.FalseNegatives > 0)
+                {
+                    Console.Error.WriteLine(
+                        $"La validación no pasó: {validation.FalsePositives} falsos positivos y " +
+                        $"{validation.FalseNegatives} falsos negativos.");
+                    return 1;
+                }
+
+                return 0;
+            }
+
+            if (command.RunBenchmarks)
+            {
+                var benchmark = new PipelineBenchmarkRunner(
+                    options,
+                    (runOptions, cancellationToken) =>
+                        RunPipelineAsync(runOptions, HttpSourceMode.Replay, false, cancellationToken));
+                await benchmark.RunAsync(CancellationToken.None);
+                Console.WriteLine("Benchmarks exportados a web/data/benchmarks.json y benchmarks.csv.");
+                return 0;
+            }
+
+            Console.WriteLine(
+                $"Iniciando pipeline en modo {options.Mode}; fuente {command.SourceMode}.");
+            await RunPipelineAsync(
                 options,
                 command.SourceMode,
-                command.RecordReplay);
-            var repository = new SqliteCatalogRepository(options);
-            var discovery = new OpenCriticDiscoveryStage(options, repository, http);
-            var runner = new PipelineRunner(
-                options,
-                discovery,
-                new OpenCriticDownloadStage(http),
-                new OpenCriticParseStage(),
-                new TitleMatchingStage(options.MatchingThreshold),
-                new SqlitePersistStage(repository),
-                new JsonPublishStage());
-
-            Console.WriteLine($"Iniciando pipeline en modo {options.Mode}; fuente {command.SourceMode}.");
-            await runner.RunAsync(options.Mode, CancellationToken.None);
+                command.RecordReplay,
+                CancellationToken.None);
             Console.WriteLine("Pipeline finalizado; catálogo actualizado en data/radar.db.");
             return 0;
         }
@@ -63,11 +84,52 @@ internal static class App
         }
     }
 
+    private static async Task RunPipelineAsync(
+        PipelineOptions options,
+        HttpSourceMode sourceMode,
+        bool recordReplay,
+        CancellationToken cancellationToken)
+    {
+        using var http = new ReplayableHttpClient(options, sourceMode, recordReplay);
+        var repository = new SqliteCatalogRepository(options);
+        var titleCandidates = new TitleCandidatePool();
+        var discovery = new OpenCriticDiscoveryStage(options, repository, http, titleCandidates);
+        var runner = new PipelineRunner(
+            options,
+            discovery,
+            new OpenCriticDownloadStage(http),
+            new OpenCriticParseStage(),
+            new TitleMatchingStage(options.MatchingThreshold, titleCandidates),
+            new SqlitePersistStage(repository),
+            new JsonPublishStage());
+        await runner.RunAsync(options.Mode, cancellationToken);
+    }
+
+    private static async Task WriteMatchingValidationAsync(
+        MatchingValidationReport report,
+        CancellationToken cancellationToken)
+    {
+        var path = Path.GetFullPath(Path.Combine("web", "data", "matching-validation.json"));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await using var stream = File.Create(path);
+        await JsonSerializer.SerializeAsync(
+            stream,
+            report,
+            new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            },
+            cancellationToken);
+    }
+
     private static RunCommand ParseArguments(PipelineOptions options, string[] args)
     {
         var sourceMode = HttpSourceMode.Live;
         var recordReplay = false;
         var benchmarkContention = false;
+        var runBenchmarks = false;
+        var validateMatching = false;
         for (var index = 0; index < args.Length; index++)
         {
             switch (args[index])
@@ -96,6 +158,12 @@ internal static class App
                 case "--benchmark-contention":
                     benchmarkContention = true;
                     break;
+                case "--run-benchmarks":
+                    runBenchmarks = true;
+                    break;
+                case "--validate-matching":
+                    validateMatching = true;
+                    break;
                 default:
                     throw new ArgumentException($"Argumento desconocido: {args[index]}.");
             }
@@ -112,11 +180,30 @@ internal static class App
                 "--benchmark-contention es aislado y no acepta --record-replay ni --source replay.");
         }
 
-        return new RunCommand(sourceMode, recordReplay, benchmarkContention);
+        if (runBenchmarks && (sourceMode != HttpSourceMode.Replay || recordReplay || benchmarkContention))
+        {
+            throw new ArgumentException(
+                "--run-benchmarks requiere --source replay y no se combina con grabación ni contención.");
+        }
+
+        if (validateMatching &&
+            (recordReplay || sourceMode == HttpSourceMode.Replay || benchmarkContention || runBenchmarks))
+        {
+            throw new ArgumentException("--validate-matching no se combina con otros modos de ejecución.");
+        }
+
+        return new RunCommand(
+            sourceMode,
+            recordReplay,
+            benchmarkContention,
+            runBenchmarks,
+            validateMatching);
     }
 
     private sealed record RunCommand(
         HttpSourceMode SourceMode,
         bool RecordReplay,
-        bool BenchmarkContention);
+        bool BenchmarkContention,
+        bool RunBenchmarks,
+        bool ValidateMatching);
 }

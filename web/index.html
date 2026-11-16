@@ -1,12 +1,236 @@
-﻿<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101116">
+  <meta name="description" content="Compara ofertas de videojuegos y consulta el rendimiento del Radar Multinúcleo.">
   <title>Radar de Ofertas Multinúcleo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
+  <script src="./app.js" defer></script>
 </head>
-<body>
-  <h1>Radar de Ofertas Multinúcleo</h1>
-  <p>Despliegue inicial funcionando.</p>
+<body id="top">
+  <a class="skip-link" href="#catalogo">Saltar al catálogo</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="#" aria-label="Radar de Ofertas Multinúcleo, inicio">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 40 40" focusable="false">
+            <circle cx="20" cy="20" r="15"></circle>
+            <circle cx="20" cy="20" r="8"></circle>
+            <path d="M20 5v15l11 8"></path>
+            <circle class="brand-dot" cx="20" cy="20" r="2.5"></circle>
+          </svg>
+        </span>
+        <span class="brand-copy">
+          <strong>RADAR</strong>
+          <small>OFERTAS MULTINÚCLEO</small>
+        </span>
+      </a>
+      <nav class="main-nav" aria-label="Navegación principal">
+        <a class="nav-link active" href="#catalogo">Catálogo</a>
+        <a class="nav-link" href="#metricas">Métricas</a>
+      </nav>
+      <div class="update-indicator">
+        <span class="status-pulse" aria-hidden="true"></span>
+        <span>
+          <small>ÚLTIMA ACTUALIZACIÓN</small>
+          <strong id="last-updated">Cargando datos…</strong>
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero-inner">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="eyebrow-line"></span> IC-3101 · ARQUITECTURA DE COMPUTADORAS</p>
+          <h1>Encuentra tu próxima<br><span>gran aventura.</span></h1>
+          <p class="hero-description">Compara precios entre tiendas, sigue el historial y descubre cómo trabaja el radar en una máquina multinúcleo.</p>
+          <a class="hero-action" href="#catalogo">Explorar catálogo <span aria-hidden="true">↓</span></a>
+        </div>
+        <div class="hero-art" aria-hidden="true">
+          <div class="orbit orbit-one"></div>
+          <div class="orbit orbit-two"></div>
+          <div class="orbit orbit-three"></div>
+          <div class="radar-center"><span></span></div>
+          <span class="radar-point point-one"></span>
+          <span class="radar-point point-two"></span>
+          <span class="radar-point point-three"></span>
+          <div class="radar-label label-one">PC · PS · SWITCH</div>
+          <div class="radar-label label-two">DATOS EN TIEMPO REAL</div>
+        </div>
+      </div>
+      <div class="hero-stats" aria-label="Resumen del catálogo">
+        <div class="hero-stat"><strong id="stat-games">—</strong><span>JUEGOS EN RADAR</span></div>
+        <div class="hero-stat"><strong id="stat-deals">—</strong><span>OFERTAS ACTIVAS</span></div>
+        <div class="hero-stat"><strong id="stat-stores">—</strong><span>TIENDAS COMPARADAS</span></div>
+        <div class="hero-stat"><strong id="stat-platforms">—</strong><span>PLATAFORMAS</span></div>
+      </div>
+    </section>
+
+    <section class="section catalog-section" id="catalogo">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">DESCUBRE Y COMPARA</p>
+          <h2>Catálogo de ofertas</h2>
+        </div>
+        <label class="search-box">
+          <span class="sr-only">Buscar videojuegos</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"></circle><path d="m16 16 5 5"></path></svg>
+          <input id="search-input" type="search" placeholder="Buscar un juego…" autocomplete="off">
+          <kbd>/</kbd>
+        </label>
+      </div>
+
+      <div class="filter-panel">
+        <div class="filter-grid">
+          <label class="filter-control">
+            <span>Tipo</span>
+            <select id="type-filter">
+              <option value="">Todos los tipos</option>
+              <option value="juego">Juego</option>
+              <option value="juego + dlc">Juego + DLC</option>
+              <option value="dlc">DLC</option>
+              <option value="otro">Otro</option>
+            </select>
+          </label>
+          <label class="filter-control">
+            <span>Plataforma</span>
+            <select id="platform-filter"><option value="">Todas</option></select>
+          </label>
+          <label class="filter-control">
+            <span>Formato</span>
+            <select id="format-filter">
+              <option value="">Físico y digital</option>
+              <option value="fisico">Físico</option>
+              <option value="digital">Digital</option>
+            </select>
+          </label>
+          <label class="filter-control">
+            <span>Tienda</span>
+            <select id="store-filter"><option value="">Todas las tiendas</option></select>
+          </label>
+          <label class="filter-control sort-control">
+            <span>Ordenar por</span>
+            <select id="sort-filter">
+              <option value="name">Nombre</option>
+              <option value="price">Mejor precio</option>
+              <option value="discount">% Descuento</option>
+              <option value="metacritic">Metacritic</option>
+            </select>
+          </label>
+          <button class="reset-button" id="reset-filters" type="button">Limpiar filtros</button>
+        </div>
+        <div class="catalog-toolbar">
+          <p id="result-count" aria-live="polite">Cargando catálogo…</p>
+          <div class="view-label"><span class="view-dot"></span> PRECIOS EN CRC CUANDO ESTÉN DISPONIBLES</div>
+        </div>
+      </div>
+
+      <div id="catalog-error" class="inline-alert" role="status" hidden></div>
+      <div id="catalog-grid" class="game-grid" aria-live="polite"></div>
+      <div id="catalog-empty" class="empty-state" hidden>
+        <div class="empty-icon" aria-hidden="true">⌕</div>
+        <h3 id="empty-title">No hay juegos para mostrar</h3>
+        <p id="empty-description">Cuando el pipeline publique el catálogo, aparecerá aquí.</p>
+      </div>
+      <nav class="pagination" id="pagination" aria-label="Paginación del catálogo"></nav>
+    </section>
+
+    <section class="metrics-section" id="metricas">
+      <div class="section metrics-inner">
+        <div class="section-heading metrics-heading">
+          <div>
+            <p class="eyebrow">OBSERVABILIDAD DEL PIPELINE</p>
+            <h2>El radar por dentro</h2>
+            <p class="section-subtitle">Mediciones reales de ejecución: E/S, emparejamiento y trabajo multinúcleo.</p>
+          </div>
+          <span class="metrics-badge"><span class="status-pulse"></span> PANEL DE EJECUCIÓN</span>
+        </div>
+
+        <div id="metrics-empty" class="empty-state metrics-empty" hidden>
+          <div class="empty-icon" aria-hidden="true">◷</div>
+          <h3>Métricas todavía no disponibles</h3>
+          <p>El panel se completará cuando se publique el primer archivo de métricas del pipeline.</p>
+        </div>
+        <div id="metrics-content" hidden>
+          <div class="metric-summary-grid">
+            <article class="metric-summary-card">
+              <span>ÚLTIMA EJECUCIÓN</span>
+              <strong id="metric-run-date">—</strong>
+              <small id="metric-run-duration">Duración no disponible</small>
+            </article>
+            <article class="metric-summary-card accent-card">
+              <span>JUEGOS SIN EMPAREJAR</span>
+              <strong id="metric-unmatched">—</strong>
+              <small>Sin coincidencia aceptada</small>
+            </article>
+            <article class="metric-summary-card">
+              <span>COINCIDENCIAS DUDOSAS</span>
+              <strong id="metric-uncertain">—</strong>
+              <small>Requieren revisión</small>
+            </article>
+          </div>
+
+          <div class="metrics-grid">
+            <article class="panel-card stage-panel">
+              <div class="panel-heading">
+                <div><p class="eyebrow">DURACIÓN</p><h3>Tiempo por etapa</h3></div>
+              </div>
+              <div id="stage-breakdown" class="stage-breakdown"></div>
+            </article>
+            <article class="panel-card requests-panel">
+              <div class="panel-heading">
+                <div><p class="eyebrow">SALUD DE FUENTES</p><h3>Solicitudes por sitio</h3></div>
+              </div>
+              <div id="request-breakdown" class="request-breakdown"></div>
+            </article>
+            <article class="panel-card chart-panel">
+              <div class="panel-heading">
+                <div><p class="eyebrow">ESCALABILIDAD</p><h3>Speedup</h3></div>
+                <span class="chart-unit">RELATIVO</span>
+              </div>
+              <div class="chart-wrap"><canvas id="speedup-chart" aria-label="Curva de speedup"></canvas></div>
+              <p id="speedup-empty" class="chart-empty" hidden>Sin resultados de benchmarks publicados.</p>
+            </article>
+            <article class="panel-card chart-panel">
+              <div class="panel-heading">
+                <div><p class="eyebrow">EFICIENCIA</p><h3>Uso de núcleos</h3></div>
+                <span class="chart-unit">POR TRABAJADOR</span>
+              </div>
+              <div class="chart-wrap"><canvas id="efficiency-chart" aria-label="Curva de eficiencia"></canvas></div>
+              <p id="efficiency-empty" class="chart-empty" hidden>Sin resultados de benchmarks publicados.</p>
+            </article>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <a class="brand footer-brand" href="#top">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 40 40" focusable="false"><circle cx="20" cy="20" r="15"></circle><circle cx="20" cy="20" r="8"></circle><path d="M20 5v15l11 8"></path><circle class="brand-dot" cx="20" cy="20" r="2.5"></circle></svg>
+        </span>
+        <span class="brand-copy"><strong>RADAR</strong><small>PROYECTO ACADÉMICO · TEC</small></span>
+      </a>
+      <p>Datos sujetos a disponibilidad de las fuentes. Precios y calificaciones pueden cambiar.</p>
+      <a class="back-top" href="#catalogo">Volver arriba ↑</a>
+    </div>
+  </footer>
+
+  <dialog class="game-dialog" id="game-dialog" aria-labelledby="dialog-title">
+    <div class="dialog-shell">
+      <button class="dialog-close" id="dialog-close" type="button" aria-label="Cerrar detalle">×</button>
+      <div id="dialog-content"></div>
+    </div>
+  </dialog>
 </body>
 </html>
