@@ -8,6 +8,7 @@ almacenan en SQLite y el sitio público consume JSON estático desde `web/data/`
 
 - `src/RadarOfertasMultinucleo/`: aplicación .NET y contratos de las seis etapas.
 - `src/RadarOfertasMultinucleo/config.json`: modo, trabajadores, colas y límites.
+- `data/catalog-seeds.json`: nombres conocidos y catálogo editable de expansiones/DLC.
 - `src/RadarOfertasMultinucleo/Infrastructure/Database/001_esquema_inicial.sql`:
   esquema relacional inicial, aplicado automáticamente al inicializar `data/radar.db`.
 - `web/`: sitio estático publicado por GitHub Pages.
