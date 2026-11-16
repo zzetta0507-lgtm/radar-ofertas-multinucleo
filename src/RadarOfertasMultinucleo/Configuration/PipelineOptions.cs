@@ -65,6 +65,9 @@ public sealed class PipelineOptions
     [JsonPropertyName("catalog_max_pages")]
     public int CatalogMaxPages { get; init; }
 
+    [JsonPropertyName("catalog_seed_file")]
+    public string CatalogSeedFile { get; init; } = string.Empty;
+
     [JsonPropertyName("domain_min_interval_ms")]
     public int DomainMinIntervalMilliseconds { get; init; }
 
@@ -105,6 +108,7 @@ public sealed class PipelineOptions
             CatalogMinGames = CatalogMinGames,
             CatalogMinDifficultCases = CatalogMinDifficultCases,
             CatalogMaxPages = CatalogMaxPages,
+            CatalogSeedFile = CatalogSeedFile,
             DomainMinIntervalMilliseconds = DomainMinIntervalMilliseconds,
             ReplayDirectory = ReplayDirectory,
             ReplayLatencyFixedMilliseconds = ReplayLatencyFixedMilliseconds,
@@ -144,7 +148,8 @@ public sealed class PipelineOptions
         if (CatalogMinGames < 1 ||
             CatalogMinDifficultCases < 0 ||
             CatalogMinDifficultCases > CatalogMinGames ||
-            CatalogMaxPages < CatalogMinGames)
+            CatalogMaxPages < CatalogMinGames ||
+            string.IsNullOrWhiteSpace(CatalogSeedFile))
         {
             throw new ArgumentException("Los límites de descubrimiento no son válidos.");
         }

@@ -90,10 +90,18 @@ internal static class App
         bool recordReplay,
         CancellationToken cancellationToken)
     {
+        var seedCatalog = await CatalogSeedCatalog.LoadAsync(
+            options.CatalogSeedFile,
+            cancellationToken);
         using var http = new ReplayableHttpClient(options, sourceMode, recordReplay);
-        var repository = new SqliteCatalogRepository(options);
+        var repository = new SqliteCatalogRepository(options, seedCatalog);
         var titleCandidates = new TitleCandidatePool();
-        var discovery = new OpenCriticDiscoveryStage(options, repository, http, titleCandidates);
+        var discovery = new OpenCriticDiscoveryStage(
+            options,
+            repository,
+            http,
+            titleCandidates,
+            seedCatalog);
         var runner = new PipelineRunner(
             options,
             discovery,
@@ -101,7 +109,7 @@ internal static class App
             new OpenCriticParseStage(),
             new TitleMatchingStage(options.MatchingThreshold, titleCandidates),
             new SqlitePersistStage(repository),
-            new JsonPublishStage());
+            new JsonPublishStage(repository));
         await runner.RunAsync(options.Mode, cancellationToken);
     }
 

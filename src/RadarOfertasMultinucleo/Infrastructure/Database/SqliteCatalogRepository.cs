@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Globalization;
 using Microsoft.Data.Sqlite;
 using RadarOfertasMultinucleo.Configuration;
 using RadarOfertasMultinucleo.Domain;
@@ -8,10 +9,12 @@ namespace RadarOfertasMultinucleo.Infrastructure.Database;
 public sealed class SqliteCatalogRepository
 {
     private readonly string _connectionString;
+    private readonly CatalogSeedCatalog _seedCatalog;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
-    public SqliteCatalogRepository(PipelineOptions options)
+    public SqliteCatalogRepository(PipelineOptions options, CatalogSeedCatalog seedCatalog)
     {
+        _seedCatalog = seedCatalog;
         var path = Path.GetFullPath(options.DatabasePath);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         _connectionString = new SqliteConnectionStringBuilder
@@ -64,6 +67,115 @@ public sealed class SqliteCatalogRepository
         }
     }
 
+    public async Task<IReadOnlyList<string>> ReclassifyExistingGamesAsync(
+        CancellationToken cancellationToken)
+    {
+        await _writeLock.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            using var transaction = connection.BeginTransaction();
+            var existingGames = new List<(string Id, string Title)>();
+            await using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText = "SELECT id, canonical_title FROM games;";
+                await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    existingGames.Add((reader.GetString(0), reader.GetString(1)));
+                }
+            }
+
+            foreach (var (id, title) in existingGames)
+            {
+                await ExecuteAsync(
+                    connection,
+                    transaction,
+                    "UPDATE games SET type = $type WHERE id = $id AND type <> $type;",
+                    cancellationToken,
+                    ("$id", id),
+                    ("$type", ToDatabaseType(
+                        GameTypeClassifier.Classify(title, _seedCatalog.KnownDlcTitles))));
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return existingGames.Select(game => game.Title).ToArray();
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<CatalogGameMetadata>> ReadCatalogMetadataAsync(
+        CancellationToken cancellationToken)
+    {
+        var games = new List<CatalogGameMetadata>();
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                g.id,
+                g.canonical_title,
+                g.type,
+                g.release_date,
+                g.msrp,
+                g.currency,
+                COALESCE((
+                    SELECT group_concat(platform_name, char(31))
+                    FROM (
+                        SELECT p.name AS platform_name
+                        FROM game_platforms gp
+                        JOIN platforms p ON p.id = gp.platform_id
+                        WHERE gp.game_id = g.id
+                        ORDER BY p.name
+                    )
+                ), ''),
+                (
+                    SELECT gs.cover_image_url
+                    FROM game_sources gs
+                    WHERE gs.game_id = g.id AND gs.cover_image_url IS NOT NULL
+                    ORDER BY CASE gs.source_id WHEN 'steam' THEN 0 ELSE 1 END
+                    LIMIT 1
+                ),
+                (
+                    SELECT ro.score
+                    FROM rating_observations ro
+                    WHERE ro.game_id = g.id AND ro.source_id = 'opencritic'
+                    ORDER BY ro.captured_at DESC
+                    LIMIT 1
+                )
+            FROM games g
+            ORDER BY g.canonical_title COLLATE NOCASE, g.id;
+            """;
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var platforms = reader.GetString(6)
+                .Split('\u001f', StringSplitOptions.RemoveEmptyEntries);
+            games.Add(new CatalogGameMetadata(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4)
+                    ? null
+                    : Convert.ToDecimal(reader.GetValue(4), CultureInfo.InvariantCulture),
+                reader.IsDBNull(5) ? null : reader.GetString(5),
+                platforms,
+                reader.IsDBNull(7) ? null : reader.GetString(7),
+                reader.IsDBNull(8)
+                    ? null
+                    : Convert.ToDecimal(reader.GetValue(8), CultureInfo.InvariantCulture)));
+        }
+
+        return games;
+    }
+
     public async Task SaveGameAsync(GameRecord game, CancellationToken cancellationToken)
     {
         await _writeLock.WaitAsync(cancellationToken);
@@ -94,7 +206,8 @@ public sealed class SqliteCatalogRepository
                 ("$releaseDate", game.ReleaseDate?.ToString("yyyy-MM-dd")),
                 ("$msrp", game.Msrp),
                 ("$currency", game.Currency),
-                ("$type", ToDatabaseType(game.Type)));
+                ("$type", ToDatabaseType(
+                    GameTypeClassifier.Classify(game.CanonicalTitle, _seedCatalog.KnownDlcTitles))));
 
             await ExecuteAsync(
                 connection,
@@ -246,7 +359,11 @@ public sealed class SqliteCatalogRepository
     }
 
     private static string SourceId(string externalId) =>
-        externalId.StartsWith("steam:", StringComparison.Ordinal) ? "steam" : "opencritic";
+        externalId.StartsWith("seed:", StringComparison.Ordinal)
+            ? "catalog-seed"
+            : externalId.StartsWith("steam:", StringComparison.Ordinal)
+                ? "steam"
+                : "opencritic";
 
     private static Task EnsureSourceAsync(
         SqliteConnection connection,
@@ -260,6 +377,7 @@ public sealed class SqliteCatalogRepository
             "steam" => ("Steam", "tienda", "https://store.steampowered.com"),
             "metacritic" => ("Metacritic", "calificacion", "https://www.metacritic.com"),
             "howlongtobeat" => ("How Long To Beat", "duracion", "https://howlongtobeat.com"),
+            "catalog-seed" => ("Catálogo de semillas", "metadatos", "https://store.steampowered.com"),
             _ => throw new InvalidOperationException(
                 $"No hay metadatos de fuente configurados para '{sourceId}'.")
         };

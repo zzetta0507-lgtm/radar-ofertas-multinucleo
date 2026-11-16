@@ -89,6 +89,17 @@ public sealed record PersistedOffer(
     double MatchingSimilarity,
     bool IsUncertainMatch);
 
+public sealed record CatalogGameMetadata(
+    string GameId,
+    string CanonicalTitle,
+    string Type,
+    string? ReleaseDate,
+    decimal? Msrp,
+    string? Currency,
+    IReadOnlyList<string> Platforms,
+    string? CoverImageUrl,
+    decimal? OpenCriticScore);
+
 public sealed record TitleMatchCandidate(
     Guid GameId,
     string CanonicalTitle,

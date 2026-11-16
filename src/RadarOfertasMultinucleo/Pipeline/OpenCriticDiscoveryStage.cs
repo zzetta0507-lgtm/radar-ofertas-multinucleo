@@ -58,31 +58,24 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
     private static readonly Regex PunctuationRegex = new(
         """[^\p{L}\p{N}\s]""",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
-    private static readonly Regex DlcTypeRegex = new(
-        """\b(DLC|expansion|season pass|add-on)\b""",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-    private static readonly Regex OtherTypeRegex = new(
-        """\b(soundtrack|demo|artbook|guide|bundle|collection)\b""",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-    private static readonly Regex GameWithDlcTypeRegex = new(
-        """\b(complete edition|ultimate edition|GOTY|game of the year|with (all )?DLC)\b""",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
     private readonly PipelineOptions _options;
     private readonly SqliteCatalogRepository _repository;
     private readonly ReplayableHttpClient _http;
     private readonly TitleCandidatePool _titleCandidates;
+    private readonly CatalogSeedCatalog _seedCatalog;
 
     public OpenCriticDiscoveryStage(
         PipelineOptions options,
         SqliteCatalogRepository repository,
         ReplayableHttpClient http,
-        TitleCandidatePool titleCandidates)
+        TitleCandidatePool titleCandidates,
+        CatalogSeedCatalog seedCatalog)
     {
         _options = options;
         _repository = repository;
         _http = http;
         _titleCandidates = titleCandidates;
+        _seedCatalog = seedCatalog;
     }
 
     public async Task<IReadOnlyList<GameRecord>> DiscoverAsync(CancellationToken cancellationToken)
@@ -108,9 +101,13 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
         CancellationToken cancellationToken)
     {
         await _repository.InitializeAsync(cancellationToken);
+        var existingTitles = await _repository.ReclassifyExistingGamesAsync(cancellationToken);
         var discovered = new List<GameRecord>();
         var visitedIds = new HashSet<string>(StringComparer.Ordinal);
         var normalizedTitles = new HashSet<string>(StringComparer.Ordinal);
+        var normalizedSeedTitles = existingTitles
+            .Select(NormalizeTitle)
+            .ToHashSet(StringComparer.Ordinal);
         var pageCount = 0;
         var hardCases = 0;
         var platformFamilies = new HashSet<string>(StringComparer.Ordinal);
@@ -188,6 +185,13 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
             }
         }
 
+        await ImportCatalogSeedsAsync(
+            discovered,
+            normalizedTitles,
+            normalizedSeedTitles,
+            publish,
+            cancellationToken);
+
         await ImportSteamPagesAsync(
             discovered,
             normalizedTitles,
@@ -209,7 +213,41 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
                 $"{platformFamilies.Count} familias de plataforma tras {pageCount} páginas OpenCritic. " +
                 $"Se requieren {_options.CatalogMinGames}, {_options.CatalogMinDifficultCases} y 3.");
         }
+    }
 
+    private async Task ImportCatalogSeedsAsync(
+        List<GameRecord> discovered,
+        HashSet<string> normalizedTitles,
+        HashSet<string> normalizedSeedTitles,
+        Func<GameRecord, Task> publish,
+        CancellationToken cancellationToken)
+    {
+        foreach (var seed in _seedCatalog.Games)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var normalizedTitle = NormalizeTitle(seed.CanonicalTitle);
+            if (!normalizedSeedTitles.Add(normalizedTitle) ||
+                !normalizedTitles.Add(normalizedTitle))
+            {
+                continue;
+            }
+
+            var game = new GameRecord(
+                StableGuid(seed.ExternalId),
+                seed.ExternalId,
+                seed.CanonicalTitle,
+                Array.Empty<string>(),
+                seed.Platforms,
+                null,
+                null,
+                null,
+                GameTypeClassifier.Classify(seed.CanonicalTitle, _seedCatalog.KnownDlcTitles),
+                seed.SourceUrl,
+                seed.CoverImageUrl,
+                null,
+                new[] { "dlc_conocido" });
+            await SaveAndPublishAsync(game, discovered, publish, cancellationToken);
+        }
     }
 
     private async Task ImportSteamPagesAsync(
@@ -273,7 +311,7 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
                     null,
                     null,
                     "USD",
-                    ClassifyType(title),
+                    GameTypeClassifier.Classify(title, _seedCatalog.KnownDlcTitles),
                     $"https://store.steampowered.com/app/{appId}/",
                     logoUrl,
                     null,
@@ -295,7 +333,7 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
         await publish(game);
     }
 
-    private static GameRecord? ParseOpenCriticGame(string id, string url, string html)
+    private GameRecord? ParseOpenCriticGame(string id, string url, string html)
     {
         var titleMatch = TitleRegex.Match(html);
         var platformBlock = PlatformBlockRegex.Match(html);
@@ -360,7 +398,7 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
             releaseDate,
             null,
             null,
-            ClassifyType(title),
+            GameTypeClassifier.Classify(title, _seedCatalog.KnownDlcTitles),
             url,
             image,
             rating,
@@ -396,23 +434,6 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
         }
 
         return tags;
-    }
-
-    private static GameType ClassifyType(string title)
-    {
-        if (DlcTypeRegex.IsMatch(title))
-        {
-            return GameType.Dlc;
-        }
-
-        if (OtherTypeRegex.IsMatch(title))
-        {
-            return GameType.Other;
-        }
-
-        return GameWithDlcTypeRegex.IsMatch(title)
-            ? GameType.GameWithDlc
-            : GameType.Game;
     }
 
     private static string CleanHtml(string value) =>

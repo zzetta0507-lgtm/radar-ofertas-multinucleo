@@ -432,11 +432,13 @@ public sealed class SqlitePersistStage : IPersistStage
 public sealed class JsonPublishStage : IPublishStage
 {
     private readonly string _outputPath;
+    private readonly SqliteCatalogRepository _repository;
     private readonly List<PersistedOffer> _offers = new();
     private readonly SemaphoreSlim _sync = new(1, 1);
 
-    public JsonPublishStage()
+    public JsonPublishStage(SqliteCatalogRepository repository)
     {
+        _repository = repository;
         _outputPath = Path.GetFullPath(Path.Combine("web", "data", "catalog.json"));
     }
 
@@ -459,13 +461,52 @@ public sealed class JsonPublishStage : IPublishStage
     {
         Directory.CreateDirectory(Path.GetDirectoryName(_outputPath)!);
         var temporaryPath = _outputPath + ".tmp";
+        var metadata = await _repository.ReadCatalogMetadataAsync(cancellationToken);
+        var offersByGame = _offers
+            .GroupBy(offer => offer.GameId)
+            .ToDictionary(
+                group => group.Key.ToString("D"),
+                group => (IReadOnlyList<PersistedOffer>)group.ToArray(),
+                StringComparer.OrdinalIgnoreCase);
+        var catalog = metadata
+            .GroupBy(game => NormalizeTitle(game.CanonicalTitle), StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .Select(group =>
+            {
+                var entries = group.ToArray();
+                var primary = entries
+                    .OrderByDescending(entry => entry.OpenCriticScore.HasValue)
+                    .ThenByDescending(entry => !string.IsNullOrEmpty(entry.CoverImageUrl))
+                    .First();
+                var offers = entries
+                    .SelectMany(entry =>
+                        offersByGame.TryGetValue(entry.GameId, out var gameOffers)
+                            ? gameOffers
+                            : Array.Empty<PersistedOffer>())
+                    .ToArray();
+                return new CatalogExportEntry(
+                    primary.GameId,
+                    primary.CanonicalTitle,
+                    primary.Type,
+                    entries.Select(entry => entry.ReleaseDate).FirstOrDefault(value => value is not null),
+                    entries.Select(entry => entry.Msrp).FirstOrDefault(value => value is not null),
+                    entries.Select(entry => entry.Currency).FirstOrDefault(value => value is not null),
+                    entries.SelectMany(entry => entry.Platforms)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(platform => platform, StringComparer.OrdinalIgnoreCase)
+                        .ToArray(),
+                    entries.Select(entry => entry.CoverImageUrl)
+                        .FirstOrDefault(value => !string.IsNullOrEmpty(value)),
+                    entries.Select(entry => entry.OpenCriticScore)
+                        .FirstOrDefault(value => value is not null),
+                    offers);
+            });
+
         await using (var stream = File.Create(temporaryPath))
         {
             await JsonSerializer.SerializeAsync(
                 stream,
-                _offers
-                    .OrderBy(offer => offer.GameId)
-                    .ThenBy(offer => offer.SourceId, StringComparer.Ordinal),
+                catalog,
                 new JsonSerializerOptions
                 {
                     WriteIndented = true,
@@ -476,6 +517,21 @@ public sealed class JsonPublishStage : IPublishStage
 
         File.Move(temporaryPath, _outputPath, overwrite: true);
     }
+
+    private static string NormalizeTitle(string title) =>
+        Regex.Replace(title.ToLowerInvariant(), @"[^\p{L}\p{N}]+", " ").Trim();
+
+    private sealed record CatalogExportEntry(
+        string GameId,
+        string CanonicalTitle,
+        string Type,
+        string? ReleaseDate,
+        decimal? Msrp,
+        string? Currency,
+        IReadOnlyList<string> Platforms,
+        string? CoverImageUrl,
+        decimal? OpenCriticScore,
+        IReadOnlyList<PersistedOffer> Offers);
 }
 
 public static class ChannelStageWorkers
