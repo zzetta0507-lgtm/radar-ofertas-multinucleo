@@ -1,0 +1,4 @@
+data/radar.db
+data/replay/
+data/benchmark-contention.json
+web/data/catalog.json.tmp

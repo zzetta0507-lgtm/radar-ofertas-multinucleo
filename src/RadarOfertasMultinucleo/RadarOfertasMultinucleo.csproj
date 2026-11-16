@@ -9,5 +9,7 @@
 
   <ItemGroup>
     <None Update="config.json" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="Infrastructure/Database/001_esquema_inicial.sql" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.0" />
   </ItemGroup>
 </Project>

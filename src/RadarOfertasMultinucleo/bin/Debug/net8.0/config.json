@@ -1,0 +1,23 @@
+{
+  "mode": "sequential",
+  "workers_io": 4,
+  "workers_cpu": 4,
+  "queue_size_stage1": 64,
+  "queue_size_stage2": 64,
+  "queue_size_stage3": 64,
+  "queue_size_stage4": 64,
+  "queue_size_stage5": 64,
+  "max_concurrent_requests_per_domain": 2,
+  "database_path": "data/radar.db",
+  "matching_threshold": 0.85,
+  "deal_rule": "combined",
+  "catalog_min_games": 500,
+  "catalog_min_difficult_cases": 50,
+  "catalog_max_pages": 5000,
+  "domain_min_interval_ms": 1000,
+  "replay_directory": "data/replay",
+  "replay_latency_fixed_ms": 0,
+  "replay_latency_jitter_ms": 0,
+  "replay_latency_seed": 3101,
+  "contention_operations": 500000
+}

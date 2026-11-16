@@ -5,44 +5,46 @@ namespace RadarOfertasMultinucleo.Pipeline;
 
 public interface IDiscoveryStage
 {
-    Task RunAsync(ChannelWriter<GameRecord> output, CancellationToken cancellationToken);
+    Task<IReadOnlyList<GameRecord>> DiscoverAsync(CancellationToken cancellationToken);
+
+    Task RunAsync(
+        ChannelWriter<GameRecord> output,
+        CancellationToken cancellationToken);
 }
 
 public interface IDownloadStage
 {
-    Task RunAsync(
-        ChannelReader<GameRecord> input,
-        ChannelWriter<SourceResponse> output,
+    Task<IReadOnlyList<SourceResponse>> DownloadAsync(
+        GameRecord game,
         CancellationToken cancellationToken);
 }
 
 public interface IParseStage
 {
-    Task RunAsync(
-        ChannelReader<SourceResponse> input,
-        ChannelWriter<ParsedCandidate> output,
+    Task<ParsedCandidate?> ParseAsync(
+        SourceResponse response,
         CancellationToken cancellationToken);
 }
 
 public interface IMatchStage
 {
-    Task RunAsync(
-        ChannelReader<ParsedCandidate> input,
-        ChannelWriter<MatchedOffer> output,
+    Task<MatchedOffer?> MatchAsync(
+        ParsedCandidate candidate,
         CancellationToken cancellationToken);
 }
 
 public interface IPersistStage
 {
-    Task RunAsync(
-        ChannelReader<MatchedOffer> input,
-        ChannelWriter<PersistedOffer> output,
+    Task<PersistedOffer?> PersistAsync(
+        MatchedOffer offer,
         CancellationToken cancellationToken);
 }
 
 public interface IPublishStage
 {
-    Task RunAsync(
-        ChannelReader<PersistedOffer> input,
+    Task PublishAsync(
+        PersistedOffer offer,
         CancellationToken cancellationToken);
+
+    Task CompleteAsync(CancellationToken cancellationToken);
 }

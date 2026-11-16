@@ -33,6 +33,22 @@ CREATE TABLE IF NOT EXISTS sources (
     base_url TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS game_sources (
+    game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    source_id TEXT NOT NULL REFERENCES sources(id),
+    external_id TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    cover_image_url TEXT,
+    PRIMARY KEY (game_id, source_id),
+    UNIQUE (source_id, external_id)
+);
+
+CREATE TABLE IF NOT EXISTS discovery_case_tags (
+    game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    tag TEXT NOT NULL,
+    PRIMARY KEY (game_id, tag)
+);
+
 CREATE TABLE IF NOT EXISTS price_observations (
     id INTEGER PRIMARY KEY,
     game_id TEXT NOT NULL REFERENCES games(id),

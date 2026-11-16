@@ -17,17 +17,24 @@ public enum OfferFormat
 
 public sealed record GameRecord(
     Guid Id,
+    string ExternalId,
     string CanonicalTitle,
     IReadOnlyList<string> AlternativeTitles,
     IReadOnlyList<string> Platforms,
     DateOnly? ReleaseDate,
     decimal? Msrp,
     string? Currency,
-    GameType Type);
+    GameType Type,
+    string SourceUrl,
+    string? CoverImageUrl,
+    decimal? OpenCriticScore,
+    IReadOnlyList<string> DifficultCaseTags);
 
 public sealed record SourceResponse(
     Guid GameId,
     string SourceId,
+    string CanonicalTitle,
+    IReadOnlyList<string> Platforms,
     string? ProductUrl,
     string ContentType,
     string? Body,
@@ -38,6 +45,8 @@ public sealed record SourceResponse(
 public sealed record ParsedCandidate(
     Guid GameId,
     string SourceId,
+    string CanonicalTitle,
+    IReadOnlyList<string> Platforms,
     string CandidateTitle,
     string? ProductUrl,
     decimal? CurrentPrice,
@@ -64,6 +73,7 @@ public sealed record PersistedOffer(
     long ObservationId,
     Guid GameId,
     string SourceId,
+    string CanonicalTitle,
     string? ProductUrl,
     decimal? CurrentPrice,
     decimal? RegularPrice,
@@ -71,4 +81,7 @@ public sealed record PersistedOffer(
     OfferFormat Format,
     bool IsDeal,
     decimal? DiscountPercent,
+    decimal? Rating,
+    string? CoverImageUrl,
+    IReadOnlyList<string> Platforms,
     DateTimeOffset CapturedAt);

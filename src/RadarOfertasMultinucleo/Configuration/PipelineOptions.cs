@@ -56,6 +56,33 @@ public sealed class PipelineOptions
     [JsonPropertyName("deal_rule")]
     public DealRule DealRule { get; init; } = DealRule.Combined;
 
+    [JsonPropertyName("catalog_min_games")]
+    public int CatalogMinGames { get; init; }
+
+    [JsonPropertyName("catalog_min_difficult_cases")]
+    public int CatalogMinDifficultCases { get; init; }
+
+    [JsonPropertyName("catalog_max_pages")]
+    public int CatalogMaxPages { get; init; }
+
+    [JsonPropertyName("domain_min_interval_ms")]
+    public int DomainMinIntervalMilliseconds { get; init; }
+
+    [JsonPropertyName("replay_directory")]
+    public string ReplayDirectory { get; init; } = string.Empty;
+
+    [JsonPropertyName("replay_latency_fixed_ms")]
+    public int ReplayLatencyFixedMilliseconds { get; init; }
+
+    [JsonPropertyName("replay_latency_jitter_ms")]
+    public int ReplayLatencyJitterMilliseconds { get; init; }
+
+    [JsonPropertyName("replay_latency_seed")]
+    public int ReplayLatencySeed { get; init; }
+
+    [JsonPropertyName("contention_operations")]
+    public int ContentionOperations { get; init; }
+
     public void Validate()
     {
         if (WorkersIo < 1 || WorkersCpu < 1)
@@ -82,6 +109,28 @@ public sealed class PipelineOptions
         if (MatchingThreshold is < 0 or > 1)
         {
             throw new ArgumentException("matching_threshold debe estar entre 0 y 1.");
+        }
+
+        if (CatalogMinGames < 1 ||
+            CatalogMinDifficultCases < 0 ||
+            CatalogMinDifficultCases > CatalogMinGames ||
+            CatalogMaxPages < CatalogMinGames)
+        {
+            throw new ArgumentException("Los límites de descubrimiento no son válidos.");
+        }
+
+        if (DomainMinIntervalMilliseconds < 0 ||
+            ReplayLatencyFixedMilliseconds < 0 ||
+            ReplayLatencyJitterMilliseconds < 0 ||
+            ReplayLatencyFixedMilliseconds > 600_000 ||
+            ReplayLatencyJitterMilliseconds > 600_000)
+        {
+            throw new ArgumentException("Los retardos deben ser no negativos y no superar diez minutos.");
+        }
+
+        if (string.IsNullOrWhiteSpace(ReplayDirectory) || ContentionOperations < 1)
+        {
+            throw new ArgumentException("replay_directory y contention_operations deben ser válidos.");
         }
     }
 }
