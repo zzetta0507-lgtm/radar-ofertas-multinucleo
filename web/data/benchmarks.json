@@ -1,0 +1,145 @@
+{
+  "generatedAt": "2026-11-16T01:05:34.2781643+00:00",
+  "repetitions": 5,
+  "logicalProcessors": 12,
+  "operatingSystem": "Microsoft Windows 10.0.26200",
+  "processArchitecture": "X64",
+  "dotnetVersion": "10.0.12",
+  "sequentialMinimumMilliseconds": 15235.4022,
+  "sequentialMaximumMilliseconds": 17041.9821,
+  "sequentialMedianMilliseconds": 15835.8578,
+  "ioSweep": [
+    {
+      "workers": 1,
+      "minimumMilliseconds": 12112.5815,
+      "maximumMilliseconds": 14068.2623,
+      "medianMilliseconds": 12551.0921,
+      "absoluteSpeedup": 1.2617115446073415,
+      "relativeSpeedup": 1,
+      "efficiency": 1,
+      "karpFlatt": null
+    },
+    {
+      "workers": 2,
+      "minimumMilliseconds": 12122.4867,
+      "maximumMilliseconds": 13971.2156,
+      "medianMilliseconds": 12714.4238,
+      "absoluteSpeedup": 1.2455033786116205,
+      "relativeSpeedup": 0.9871538260349635,
+      "efficiency": 0.49357691301748174,
+      "karpFlatt": 1.026026691334693
+    },
+    {
+      "workers": 4,
+      "minimumMilliseconds": 12235.574,
+      "maximumMilliseconds": 14254.1948,
+      "medianMilliseconds": 13611.6702,
+      "absoluteSpeedup": 1.1634029892966404,
+      "relativeSpeedup": 0.9220831768315985,
+      "efficiency": 0.23052079420789962,
+      "karpFlatt": 1.112667815841566
+    },
+    {
+      "workers": 8,
+      "minimumMilliseconds": 12120.3531,
+      "maximumMilliseconds": 14161.4514,
+      "medianMilliseconds": 12758.2483,
+      "absoluteSpeedup": 1.2412250826000935,
+      "relativeSpeedup": 0.9837629590576318,
+      "efficiency": 0.12297036988220397,
+      "karpFlatt": 1.0188628958317614
+    },
+    {
+      "workers": 16,
+      "minimumMilliseconds": 12676.5979,
+      "maximumMilliseconds": 14014.2186,
+      "medianMilliseconds": 12867.8776,
+      "absoluteSpeedup": 1.2306503288467712,
+      "relativeSpeedup": 0.9753816822130792,
+      "efficiency": 0.06096135513831745,
+      "karpFlatt": 1.0269223212323757
+    },
+    {
+      "workers": 32,
+      "minimumMilliseconds": 12203.4722,
+      "maximumMilliseconds": 14267.4514,
+      "medianMilliseconds": 12602.3591,
+      "absoluteSpeedup": 1.2565788416551311,
+      "relativeSpeedup": 0.9959319521374376,
+      "efficiency": 0.031122873504294924,
+      "karpFlatt": 1.0042164278432428
+    },
+    {
+      "workers": 64,
+      "minimumMilliseconds": 12090.6276,
+      "maximumMilliseconds": 14060.4145,
+      "medianMilliseconds": 12629.6024,
+      "absoluteSpeedup": 1.2538682769617513,
+      "relativeSpeedup": 0.993783628532914,
+      "efficiency": 0.015527869195826782,
+      "karpFlatt": 1.0063545462500507
+    }
+  ],
+  "cpuSweep": [
+    {
+      "workers": 1,
+      "minimumMilliseconds": 12081.7551,
+      "maximumMilliseconds": 13234.3485,
+      "medianMilliseconds": 12582.3847,
+      "absoluteSpeedup": 1.258573647013034,
+      "relativeSpeedup": 1,
+      "efficiency": 1,
+      "karpFlatt": null
+    },
+    {
+      "workers": 2,
+      "minimumMilliseconds": 12339.142,
+      "maximumMilliseconds": 13987.2106,
+      "medianMilliseconds": 13494.5128,
+      "absoluteSpeedup": 1.1735034850609798,
+      "relativeSpeedup": 0.9324074819507377,
+      "efficiency": 0.4662037409753689,
+      "karpFlatt": 1.1449849327846415
+    },
+    {
+      "workers": 4,
+      "minimumMilliseconds": 13899.406,
+      "maximumMilliseconds": 15612.8344,
+      "medianMilliseconds": 15192.7229,
+      "absoluteSpeedup": 1.0423317731938624,
+      "relativeSpeedup": 0.8281849661063719,
+      "efficiency": 0.20704624152659298,
+      "karpFlatt": 1.276612980473672
+    },
+    {
+      "workers": 8,
+      "minimumMilliseconds": 14382.7946,
+      "maximumMilliseconds": 16532.672,
+      "medianMilliseconds": 14803.7609,
+      "absoluteSpeedup": 1.069718560504446,
+      "relativeSpeedup": 0.8499451446827948,
+      "efficiency": 0.10624314308534935,
+      "karpFlatt": 1.20176744851418
+    },
+    {
+      "workers": 12,
+      "minimumMilliseconds": 14548.0922,
+      "maximumMilliseconds": 16362.8095,
+      "medianMilliseconds": 15712.2926,
+      "absoluteSpeedup": 1.007864237456983,
+      "relativeSpeedup": 0.8007987771307161,
+      "efficiency": 0.06673323142755967,
+      "karpFlatt": 1.2713670789145546
+    },
+    {
+      "workers": 24,
+      "minimumMilliseconds": 15008.7578,
+      "maximumMilliseconds": 16886.6846,
+      "medianMilliseconds": 15443.2006,
+      "absoluteSpeedup": 1.0254258951994706,
+      "relativeSpeedup": 0.8147523965984098,
+      "efficiency": 0.03394801652493374,
+      "karpFlatt": 1.2372522595021276
+    }
+  ]
+}

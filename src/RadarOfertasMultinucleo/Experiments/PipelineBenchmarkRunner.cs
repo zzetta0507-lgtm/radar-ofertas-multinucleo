@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using RadarOfertasMultinucleo.Configuration;
 
 namespace RadarOfertasMultinucleo.Experiments;
@@ -79,6 +80,7 @@ public sealed class PipelineBenchmarkRunner
         for (var repetition = 0; repetition < Repetitions; repetition++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            SqliteConnection.ClearAllPools();
             var temporaryDirectory = Path.Combine(
                 Path.GetTempPath(),
                 "radar-ofertas-benchmark-" + Guid.NewGuid().ToString("N"));
@@ -97,6 +99,7 @@ public sealed class PipelineBenchmarkRunner
             }
             finally
             {
+                SqliteConnection.ClearAllPools();
                 if (Directory.Exists(temporaryDirectory))
                 {
                     Directory.Delete(temporaryDirectory, recursive: true);

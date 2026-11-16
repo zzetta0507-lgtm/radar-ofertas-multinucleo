@@ -401,6 +401,7 @@ public sealed class SqlitePersistStage : IPersistStage
         var observationId = candidate.Rating is { } rating
             ? await _repository.SaveRatingAsync(
                 offer.GameId,
+                offer.MatchedCanonicalTitle,
                 candidate.SourceId,
                 rating,
                 candidate.RetrievedAt,

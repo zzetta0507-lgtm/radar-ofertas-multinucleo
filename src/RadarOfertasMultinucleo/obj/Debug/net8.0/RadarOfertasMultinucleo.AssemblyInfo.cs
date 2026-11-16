@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("RadarOfertasMultinucleo")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7bf55bd50b17f9bbff46e151e66b78ba90f63b10")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+1401a3d19f1ff1c9319ad6edddca19f4d35467ad")]
 [assembly: System.Reflection.AssemblyProductAttribute("RadarOfertasMultinucleo")]
 [assembly: System.Reflection.AssemblyTitleAttribute("RadarOfertasMultinucleo")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
