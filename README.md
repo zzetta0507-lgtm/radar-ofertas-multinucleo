@@ -17,7 +17,7 @@ almacenan en SQLite y el sitio público consume JSON estático desde `web/data/`
 
 - [Acta y roles](docs/acta.md)
 - [Seguimiento de reuniones](docs/seguimiento.md)
-- [Informe técnico final](docs/informe.md)
+- [Informe técnico final — Sección 12, Sección 16 y Anexo 2](docs/informe.md)
 - [ADRs](docs/adr/)
 - [Cambios de diseño](docs/cambios-diseno.md)
 - [Bitácora de IA](docs/bitacora-ia.md)

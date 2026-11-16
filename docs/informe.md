@@ -16,7 +16,7 @@ Estos resultados son mediciones del **pipeline completo**, no de cada etapa por 
 
 ## 2. Ficha del equipo de medición
 
-La información de sistema se obtuvo localmente mediante `Win32_Processor` y `Win32_ComputerSystem`. El SO, la arquitectura del proceso, el runtime y los 12 procesadores lógicos coinciden con los metadatos de `web/data/benchmarks.json`.
+La información del procesador y la memoria se obtuvo localmente mediante `Win32_Processor` y `Win32_ComputerSystem`; el nombre, versión y arquitectura del SO se contrastaron con `Win32_OperatingSystem`. El benchmark registra `Microsoft Windows 10.0.26200` y `X64`, que coinciden con la descripción de sistema y arquitectura de proceso exportadas en `web/data/benchmarks.json`. En la consulta CIM local, la edición aparece como **Windows 11 Pro**, versión `10.0.26200`, arquitectura de 64 bits. Se conserva la etiqueta del artefacto para identificar exactamente el entorno reportado por el benchmark y se aclara la edición que devuelve Windows.
 
 | Propiedad | Valor |
 |---|---|
@@ -25,7 +25,8 @@ La información de sistema se obtuvo localmente mediante `Win32_Processor` y `Wi
 | Procesadores lógicos | 12 |
 | SMT | Activo (12 procesadores lógicos para 6 núcleos físicos) |
 | Memoria RAM instalada | 25,615,966,208 bytes (25.62 GB decimales; aproximadamente 23.86 GiB) |
-| Sistema operativo | Microsoft Windows 10.0.26200 |
+| Sistema operativo (metadato del benchmark) | Microsoft Windows 10.0.26200 |
+| Edición informada localmente por CIM | Windows 11 Pro, versión 10.0.26200, 64 bits |
 | Arquitectura del proceso | X64 |
 | Lenguaje / runtime ejecutado | C# / .NET 10.0.12 |
 | Target del proyecto | `net8.0`, con `RollForward=Major` |
