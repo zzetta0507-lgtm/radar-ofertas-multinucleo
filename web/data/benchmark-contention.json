@@ -1,0 +1,106 @@
+{
+  "capturedAt": "2026-11-16T00:33:35.8342582+00:00",
+  "operations": 500000,
+  "workers": 4,
+  "raceDemonstration": {
+    "platform": "PC",
+    "expectedOffers": 4,
+    "observedOffers": 1,
+    "participatingWorkers": 4,
+    "lostUpdateObserved": true
+  },
+  "results": [
+    {
+      "variant": "sin_sincronizacion",
+      "elapsedMilliseconds": 10.4903,
+      "byPlatform": [
+        {
+          "platform": "PC",
+          "offers": 89707
+        },
+        {
+          "platform": "PlayStation",
+          "offers": 92427
+        },
+        {
+          "platform": "Nintendo Switch",
+          "offers": 90900
+        },
+        {
+          "platform": "Xbox",
+          "offers": 91094
+        }
+      ],
+      "totalOffers": 364128
+    },
+    {
+      "variant": "lock_global",
+      "elapsedMilliseconds": 34.7148,
+      "byPlatform": [
+        {
+          "platform": "PC",
+          "offers": 125000
+        },
+        {
+          "platform": "PlayStation",
+          "offers": 125000
+        },
+        {
+          "platform": "Nintendo Switch",
+          "offers": 125000
+        },
+        {
+          "platform": "Xbox",
+          "offers": 125000
+        }
+      ],
+      "totalOffers": 500000
+    },
+    {
+      "variant": "thread_local",
+      "elapsedMilliseconds": 2.5527,
+      "byPlatform": [
+        {
+          "platform": "PC",
+          "offers": 125000
+        },
+        {
+          "platform": "PlayStation",
+          "offers": 125000
+        },
+        {
+          "platform": "Nintendo Switch",
+          "offers": 125000
+        },
+        {
+          "platform": "Xbox",
+          "offers": 125000
+        }
+      ],
+      "totalOffers": 500000
+    },
+    {
+      "variant": "concurrent_dictionary",
+      "elapsedMilliseconds": 49.9466,
+      "byPlatform": [
+        {
+          "platform": "PC",
+          "offers": 125000
+        },
+        {
+          "platform": "PlayStation",
+          "offers": 125000
+        },
+        {
+          "platform": "Nintendo Switch",
+          "offers": 125000
+        },
+        {
+          "platform": "Xbox",
+          "offers": 125000
+        }
+      ],
+      "totalOffers": 500000
+    }
+  ]
+}
