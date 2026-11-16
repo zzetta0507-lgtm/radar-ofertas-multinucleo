@@ -5,3 +5,5 @@ web/data/catalog.json.tmp
 
 bin/
 obj/
+
+!data/catalog-seeds.json

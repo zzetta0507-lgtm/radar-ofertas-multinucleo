@@ -1,0 +1,86 @@
+{
+  "knownDlcTitles": [
+    "Shadow of the Erdtree",
+    "Phantom Liberty",
+    "Blood and Wine",
+    "Hearts of Stone",
+    "Dawnguard",
+    "Dragonborn",
+    "Far Harbor",
+    "Nuka-World",
+    "Iceborne",
+    "The Delicious Last Course"
+  ],
+  "games": [
+    {
+      "externalId": "seed:steam:2778580",
+      "canonicalTitle": "ELDEN RING Shadow of the Erdtree",
+      "platforms": ["PC"],
+      "sourceUrl": "https://store.steampowered.com/app/2778580/",
+      "coverImageUrl": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/2778580/header.jpg"
+    },
+    {
+      "externalId": "seed:steam:2138330",
+      "canonicalTitle": "Cyberpunk 2077: Phantom Liberty",
+      "platforms": ["PC"],
+      "sourceUrl": "https://store.steampowered.com/app/2138330/",
+      "coverImageUrl": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/2138330/header.jpg"
+    },
+    {
+      "externalId": "seed:steam:378649",
+      "canonicalTitle": "The Witcher 3: Wild Hunt - Blood and Wine",
+      "platforms": ["PC"],
+      "sourceUrl": "https://store.steampowered.com/app/378649/",
+      "coverImageUrl": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/378649/header.jpg"
+    },
+    {
+      "externalId": "seed:steam:378648",
+      "canonicalTitle": "The Witcher 3: Wild Hunt - Hearts of Stone",
+      "platforms": ["PC"],
+      "sourceUrl": "https://store.steampowered.com/app/378648/",
+      "coverImageUrl": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/378648/header.jpg"
+    },
+    {
+      "externalId": "seed:steam:211720",
+      "canonicalTitle": "The Elder Scrolls V: Skyrim - Dawnguard",
+      "platforms": ["PC"],
+      "sourceUrl": "https://store.steampowered.com/app/211720/",
+      "coverImageUrl": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/211720/header.jpg"
+    },
+    {
+      "externalId": "seed:steam:226880",
+      "canonicalTitle": "The Elder Scrolls V: Skyrim - Dragonborn",
+      "platforms": ["PC"],
+      "sourceUrl": "https://store.steampowered.com/app/226880/",
+      "coverImageUrl": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/226880/header.jpg"
+    },
+    {
+      "externalId": "seed:steam:435870",
+      "canonicalTitle": "Fallout 4 - Far Harbor",
+      "platforms": ["PC"],
+      "sourceUrl": "https://store.steampowered.com/app/435870/",
+      "coverImageUrl": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/435870/header.jpg"
+    },
+    {
+      "externalId": "seed:steam:490650",
+      "canonicalTitle": "Fallout 4 - Nuka-World",
+      "platforms": ["PC"],
+      "sourceUrl": "https://store.steampowered.com/app/490650/",
+      "coverImageUrl": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/490650/header.jpg"
+    },
+    {
+      "externalId": "seed:steam:1118010",
+      "canonicalTitle": "Monster Hunter: World - Iceborne",
+      "platforms": ["PC"],
+      "sourceUrl": "https://store.steampowered.com/app/1118010/",
+      "coverImageUrl": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1118010/header.jpg"
+    },
+    {
+      "externalId": "seed:steam:1117850",
+      "canonicalTitle": "Cuphead - The Delicious Last Course",
+      "platforms": ["PC"],
+      "sourceUrl": "https://store.steampowered.com/app/1117850/",
+      "coverImageUrl": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1117850/header.jpg"
+    }
+  ]
+}
