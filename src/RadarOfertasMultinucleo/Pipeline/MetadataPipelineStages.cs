@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
 using System.Text;
@@ -11,45 +12,429 @@ using RadarOfertasMultinucleo.Infrastructure.Replay;
 
 namespace RadarOfertasMultinucleo.Pipeline;
 
-public sealed class OpenCriticDownloadStage : IDownloadStage
+public sealed class StoreAndMetadataDownloadStage : IDownloadStage
 {
+    private const string SteamSearchUrl = "https://store.steampowered.com/api/storesearch/";
+    private const string SteamAppDetailsUrl = "https://store.steampowered.com/api/appdetails";
+    private const string GamersGateSearchUrl = "https://www.gamersgate.com/api/games/";
     private readonly ReplayableHttpClient _http;
+    private readonly double _matchingThreshold;
+    private readonly ConcurrentDictionary<string, byte> _reportedFailures = new(StringComparer.Ordinal);
 
-    public OpenCriticDownloadStage(ReplayableHttpClient http)
+    public StoreAndMetadataDownloadStage(
+        ReplayableHttpClient http,
+        double matchingThreshold)
     {
         _http = http;
+        _matchingThreshold = matchingThreshold;
     }
 
     public async Task<IReadOnlyList<SourceResponse>> DownloadAsync(
         GameRecord game,
         CancellationToken cancellationToken)
     {
-        if (!game.ExternalId.StartsWith("opencritic:", StringComparison.Ordinal))
+        var responses = new List<SourceResponse>();
+        if (game.ExternalId.StartsWith("opencritic:", StringComparison.Ordinal))
         {
-            return Array.Empty<SourceResponse>();
+            var openCriticPage = await TryGetPageAsync(
+                new Uri(game.SourceUrl),
+                "opencritic",
+                cancellationToken);
+            if (openCriticPage is not null)
+            {
+                responses.Add(new SourceResponse(
+                    game.Id,
+                    "opencritic",
+                    game.CanonicalTitle,
+                    game.Platforms,
+                    game.SourceUrl,
+                    openCriticPage.ContentType,
+                    openCriticPage.Body,
+                    openCriticPage.RetrievedAt,
+                    true,
+                    null,
+                    game.Msrp));
+            }
         }
 
-        var uri = new Uri(game.SourceUrl);
-        var page = await _http.GetPageAsync(uri, cancellationToken);
-        return new[]
+        var steamListing = await FindSteamListingAsync(game, cancellationToken);
+        if (steamListing is not null)
         {
-            new SourceResponse(
+            var body = JsonSerializer.Serialize(steamListing);
+            responses.Add(new SourceResponse(
                 game.Id,
-                "opencritic",
+                "steam",
                 game.CanonicalTitle,
                 game.Platforms,
-                game.SourceUrl,
-                page.ContentType,
-                page.Body,
-                page.RetrievedAt,
+                steamListing.ProductUrl,
+                "application/json",
+                body,
+                steamListing.RetrievedAt,
                 true,
-                null)
+                null,
+                game.Msrp));
+
+            if (steamListing.Rating is not null)
+            {
+                responses.Add(new SourceResponse(
+                    game.Id,
+                    "metacritic",
+                    game.CanonicalTitle,
+                    game.Platforms,
+                    null,
+                    "application/json",
+                    body,
+                    steamListing.RetrievedAt,
+                    true,
+                    null,
+                    game.Msrp));
+            }
+        }
+
+        var gamersGateListing = await FindGamersGateListingAsync(game, cancellationToken);
+        if (gamersGateListing is not null)
+        {
+            responses.Add(new SourceResponse(
+                game.Id,
+                "gamersgate",
+                game.CanonicalTitle,
+                game.Platforms,
+                gamersGateListing.ProductUrl,
+                "application/json",
+                JsonSerializer.Serialize(gamersGateListing),
+                gamersGateListing.RetrievedAt,
+                true,
+                null,
+                game.Msrp));
+        }
+
+        return responses;
+    }
+
+    private async Task<StoreListingPayload?> FindSteamListingAsync(
+        GameRecord game,
+        CancellationToken cancellationToken)
+    {
+        var knownAppId = game.ExternalId.StartsWith("steam:", StringComparison.Ordinal)
+            ? game.ExternalId["steam:".Length..]
+            : null;
+        var uri = knownAppId is not null
+            ? new Uri($"{SteamAppDetailsUrl}?appids={Uri.EscapeDataString(knownAppId)}&cc=us&l=en")
+            : new Uri(
+                $"{SteamSearchUrl}?term={Uri.EscapeDataString(game.CanonicalTitle)}&l=english&cc=us");
+        var page = await TryGetPageAsync(uri, "steam", cancellationToken);
+        if (page is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(page.Body);
+            var root = document.RootElement;
+            if (knownAppId is not null)
+            {
+                if (!root.TryGetProperty(knownAppId, out var app) ||
+                    !app.TryGetProperty("success", out var success) ||
+                    success.ValueKind != JsonValueKind.True ||
+                    !app.TryGetProperty("data", out var data))
+                {
+                    return null;
+                }
+
+                var name = GetString(data, "name");
+                if (name is null ||
+                    TitleMatchingStage.Similarity(
+                        game.CanonicalTitle,
+                        name) < _matchingThreshold)
+                {
+                    return null;
+                }
+
+                var appId = GetString(data, "steam_appid") ?? knownAppId;
+                var price = data.TryGetProperty("price_overview", out var overview)
+                    ? ParseSteamPrice(overview)
+                    : null;
+                var isFree = data.TryGetProperty("is_free", out var free) &&
+                    free.ValueKind == JsonValueKind.True;
+                return CreateSteamPayload(
+                    game,
+                    name,
+                    appId,
+                    price,
+                    isFree,
+                    GetMetacriticScore(data),
+                    GetString(data, "header_image"),
+                    page.RetrievedAt);
+            }
+
+            if (!root.TryGetProperty("items", out var items) ||
+                items.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            var best = items.EnumerateArray()
+                .Where(item =>
+                    GetString(item, "type")?.Equals("app", StringComparison.OrdinalIgnoreCase) == true)
+                .Select(item => new
+                {
+                    Item = item,
+                    Name = GetString(item, "name"),
+                    Score = GetString(item, "name") is { } name
+                        ? TitleMatchingStage.Similarity(
+                            game.CanonicalTitle,
+                            name)
+                        : 0
+                })
+                .Where(item => item.Name is not null && item.Score >= _matchingThreshold)
+                .OrderByDescending(item => item.Score)
+                .FirstOrDefault();
+            if (best?.Name is null ||
+                !best.Item.TryGetProperty("id", out var idElement))
+            {
+                return null;
+            }
+
+            var id = idElement.ToString();
+            var itemPrice = best.Item.TryGetProperty("price", out var priceElement)
+                ? ParseSteamPrice(priceElement)
+                : null;
+            return CreateSteamPayload(
+                game,
+                best.Name,
+                id,
+                itemPrice,
+                false,
+                ParseDecimal(GetString(best.Item, "metascore")),
+                GetString(best.Item, "tiny_image"),
+                page.RetrievedAt);
+        }
+        catch (JsonException exception)
+        {
+            ReportFailure("steam", uri, exception.Message);
+            return null;
+        }
+    }
+
+    private async Task<StoreListingPayload?> FindGamersGateListingAsync(
+        GameRecord game,
+        CancellationToken cancellationToken)
+    {
+        var uri = new Uri(
+            GamersGateSearchUrl + "?query=" + Uri.EscapeDataString(game.CanonicalTitle));
+        var page = await TryGetPageAsync(uri, "gamersgate", cancellationToken);
+        if (page is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(page.Body);
+            if (!document.RootElement.TryGetProperty("catalog", out var catalog) ||
+                catalog.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            var best = catalog.EnumerateArray()
+                .Where(item =>
+                    !item.TryGetProperty("is_available", out var available) ||
+                    available.ValueKind != JsonValueKind.False)
+                .Select(item => new
+                {
+                    Item = item,
+                    Name = GetString(item, "name"),
+                    Score = GetString(item, "name") is { } name
+                        ? TitleMatchingStage.Similarity(
+                            game.CanonicalTitle,
+                            name)
+                        : 0
+                })
+                .Where(item => item.Name is not null && item.Score >= _matchingThreshold)
+                .OrderByDescending(item => item.Score)
+                .FirstOrDefault();
+            if (best?.Name is null)
+            {
+                return null;
+            }
+
+            var currentPrice = ParseDecimal(GetString(best.Item, "raw_price")) ??
+                ParsePriceText(GetString(best.Item, "price"));
+            if (currentPrice is null)
+            {
+                return null;
+            }
+
+            var regularPrice = ParsePriceText(GetString(best.Item, "baseprice"));
+            var productPath = GetString(best.Item, "link");
+            var productUrl = productPath is null
+                ? null
+                : new Uri(new Uri("https://www.gamersgate.com"), productPath).AbsoluteUri;
+            return new StoreListingPayload(
+                best.Name,
+                GetString(best.Item, "id") ?? string.Empty,
+                currentPrice,
+                regularPrice,
+                GetString(best.Item, "currency_code"),
+                null,
+                productUrl,
+                GetString(best.Item, "image"),
+                page.RetrievedAt);
+        }
+        catch (JsonException exception)
+        {
+            ReportFailure("gamersgate", uri, exception.Message);
+            return null;
+        }
+    }
+
+    private static StoreListingPayload CreateSteamPayload(
+        GameRecord game,
+        string title,
+        string appId,
+        (decimal? Current, decimal? Regular, string? Currency)? price,
+        bool isFree,
+        decimal? rating,
+        string? coverImageUrl,
+        DateTimeOffset retrievedAt)
+    {
+        var productUrl = $"https://store.steampowered.com/app/{Uri.EscapeDataString(appId)}/";
+        return new StoreListingPayload(
+            title,
+            appId,
+            isFree ? 0 : price?.Current,
+            isFree ? 0 : price?.Regular,
+            price?.Currency ?? (isFree ? "USD" : null),
+            rating,
+            productUrl,
+            coverImageUrl ?? game.CoverImageUrl,
+            retrievedAt);
+    }
+
+    private async Task<DownloadedPage?> TryGetPageAsync(
+        Uri uri,
+        string sourceId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _http.GetPageAsync(uri, cancellationToken);
+        }
+        catch (HttpRequestException exception)
+        {
+            ReportFailure(sourceId, uri, exception.Message);
+        }
+        catch (IOException exception)
+        {
+            ReportFailure(sourceId, uri, exception.Message);
+        }
+        catch (InvalidOperationException exception)
+        {
+            ReportFailure(sourceId, uri, exception.Message);
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            ReportFailure(sourceId, uri, exception.Message);
+        }
+
+        return null;
+    }
+
+    private void ReportFailure(string sourceId, Uri uri, string reason)
+    {
+        if (_reportedFailures.TryAdd(sourceId, 0))
+        {
+            Console.Error.WriteLine(
+                $"Aviso: la fuente {sourceId} no está disponible ({uri.Host}): {reason}. " +
+                "Se conservarán los últimos datos válidos al publicar.");
+        }
+    }
+
+    private static (decimal? Current, decimal? Regular, string? Currency)? ParseSteamPrice(
+        JsonElement price)
+    {
+        if (price.ValueKind != JsonValueKind.Object ||
+            !price.TryGetProperty("final", out var final) ||
+            final.ValueKind != JsonValueKind.Number)
+        {
+            return null;
+        }
+
+        var initial = price.TryGetProperty("initial", out var initialElement) &&
+            initialElement.ValueKind == JsonValueKind.Number
+                ? initialElement.GetDecimal() / 100m
+                : final.GetDecimal() / 100m;
+        return (
+            final.GetDecimal() / 100m,
+            initial,
+            GetString(price, "currency"));
+    }
+
+    private static decimal? GetMetacriticScore(JsonElement data)
+    {
+        if (!data.TryGetProperty("metacritic", out var metacritic) ||
+            metacritic.ValueKind != JsonValueKind.Object ||
+            !metacritic.TryGetProperty("score", out var score))
+        {
+            return null;
+        }
+
+        return score.ValueKind switch
+        {
+            JsonValueKind.Number => score.GetDecimal(),
+            JsonValueKind.String => ParseDecimal(score.GetString()),
+            _ => null
         };
     }
+
+    private static decimal? ParseDecimal(string? value) =>
+        decimal.TryParse(
+            value,
+            NumberStyles.Number,
+            CultureInfo.InvariantCulture,
+            out var parsed)
+            ? parsed
+            : null;
+
+    private static decimal? ParsePriceText(string? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        var match = Regex.Match(value, """[-+]?\d+(?:[.,]\d{1,2})?""");
+        return match.Success
+            ? ParseDecimal(match.Value.Replace(',', '.'))
+            : null;
+    }
+
+    private static string? GetString(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var value) &&
+        value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 }
 
-public sealed class OpenCriticParseStage : IParseStage
+public sealed record StoreListingPayload(
+    string CandidateTitle,
+    string ProductId,
+    decimal? CurrentPrice,
+    decimal? RegularPrice,
+    string? Currency,
+    decimal? Rating,
+    string? ProductUrl,
+    string? CoverImageUrl,
+    DateTimeOffset RetrievedAt);
+
+public sealed class CatalogSourceParseStage : IParseStage
 {
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
     private static readonly Regex TitleRegex = new(
         """<h1\b[^>]*>(?<title>.*?)</h1>""",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline);
@@ -70,11 +455,76 @@ public sealed class OpenCriticParseStage : IParseStage
             return Task.FromResult<ParsedCandidate?>(null);
         }
 
+        if (response.SourceId.Equals("opencritic", StringComparison.OrdinalIgnoreCase))
+        {
+            return ParseOpenCritic(response);
+        }
+
+        try
+        {
+            var listing = JsonSerializer.Deserialize<StoreListingPayload>(response.Body, JsonOptions);
+            if (listing is null)
+            {
+                return Task.FromResult<ParsedCandidate?>(null);
+            }
+
+            var isMetacritic = response.SourceId.Equals(
+                "metacritic",
+                StringComparison.OrdinalIgnoreCase);
+            if (isMetacritic && listing.Rating is null)
+            {
+                return Task.FromResult<ParsedCandidate?>(null);
+            }
+
+            if (!isMetacritic &&
+                listing.CurrentPrice is null &&
+                listing.RegularPrice is null)
+            {
+                return Task.FromResult<ParsedCandidate?>(null);
+            }
+
+            return Task.FromResult<ParsedCandidate?>(new ParsedCandidate(
+                response.GameId,
+                response.SourceId,
+                response.CanonicalTitle,
+                response.Platforms,
+                isMetacritic ? response.CanonicalTitle : listing.CandidateTitle,
+                isMetacritic ? null : response.ProductUrl ?? listing.ProductUrl,
+                isMetacritic ? null : listing.CurrentPrice,
+                isMetacritic ? null : listing.RegularPrice,
+                isMetacritic ? null : listing.Currency,
+                isMetacritic ? OfferFormat.Unknown : OfferFormat.Digital,
+                isMetacritic ? listing.Rating : null,
+                isMetacritic ? "Metacritic" : null,
+                null,
+                null,
+                null,
+                listing.CoverImageUrl,
+                listing.RetrievedAt,
+                response.RepositoryMsrp));
+        }
+        catch (JsonException exception)
+        {
+            Console.Error.WriteLine(
+                $"Aviso: respuesta JSON inválida de {response.SourceId} para " +
+                $"{response.CanonicalTitle}: {exception.Message}");
+            return Task.FromResult<ParsedCandidate?>(null);
+        }
+    }
+
+    private static Task<ParsedCandidate?> ParseOpenCritic(SourceResponse response)
+    {
+        if (response.Body is null)
+        {
+            return Task.FromResult<ParsedCandidate?>(null);
+        }
+
         var titleMatch = TitleRegex.Match(response.Body);
         if (!titleMatch.Success)
         {
-            throw new InvalidDataException(
-                $"La respuesta de OpenCritic para {response.CanonicalTitle} no contiene título.");
+            Console.Error.WriteLine(
+                $"Aviso: OpenCritic no devolvió un título para {response.CanonicalTitle}.");
+            return Task.FromResult<ParsedCandidate?>(null);
         }
 
         var title = CleanHtml(titleMatch.Groups["title"].Value);
@@ -112,7 +562,8 @@ public sealed class OpenCriticParseStage : IParseStage
             null,
             null,
             image,
-            response.RetrievedAt));
+            response.RetrievedAt,
+            response.RepositoryMsrp));
     }
 
     private static string CleanHtml(string value) =>
@@ -142,14 +593,32 @@ public sealed class TitleMatchingStage : IMatchStage
     private static readonly Regex DifficultCaseRegex = new(
         """\b(remaster(?:ed)?|remake|definitive|deluxe|goty|edition|dlc|expansion|season pass|bundle|pack|collection|II|III|IV|V|VI|VII|VIII|IX|X)\b""",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex NumberWordRegex = new(
+        """\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\b""",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly IReadOnlyDictionary<string, string> NumberWords =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["zero"] = "0", ["one"] = "1", ["two"] = "2", ["three"] = "3",
+            ["four"] = "4", ["five"] = "5", ["six"] = "6", ["seven"] = "7",
+            ["eight"] = "8", ["nine"] = "9", ["ten"] = "10", ["eleven"] = "11",
+            ["twelve"] = "12", ["thirteen"] = "13", ["fourteen"] = "14",
+            ["fifteen"] = "15", ["sixteen"] = "16", ["seventeen"] = "17",
+            ["eighteen"] = "18", ["nineteen"] = "19", ["twenty"] = "20"
+        };
 
     private readonly double _threshold;
+    private readonly DealRule _dealRule;
     private readonly TitleCandidatePool _titleCandidates;
     private int _maxDegreeOfParallelism = 1;
 
-    public TitleMatchingStage(double threshold, TitleCandidatePool titleCandidates)
+    public TitleMatchingStage(
+        double threshold,
+        DealRule dealRule,
+        TitleCandidatePool titleCandidates)
     {
         _threshold = threshold;
+        _dealRule = dealRule;
         _titleCandidates = titleCandidates;
     }
 
@@ -204,6 +673,7 @@ public sealed class TitleMatchingStage : IMatchStage
 
         var best = ranked[0];
         var ambiguous = ranked.Length > 1 && best.Score - ranked[1].Score < 0.03;
+        var (isDeal, discountPercent) = CalculateDeal(candidate);
         return Task.FromResult<MatchedOffer?>(new MatchedOffer(
             best.Candidate.GameId,
             best.Candidate.GameId == candidate.GameId
@@ -214,8 +684,8 @@ public sealed class TitleMatchingStage : IMatchStage
             best.Score - _threshold < 0.05 ||
                 ambiguous ||
                 best.Candidate.DifficultCaseTags.Count > 0,
-            false,
-            null));
+            isDeal,
+            discountPercent));
     }
 
     public static MatchingValidationReport Validate(
@@ -278,8 +748,8 @@ public sealed class TitleMatchingStage : IMatchStage
 
     public static double Similarity(string left, string right)
     {
-        left = Normalize(left);
-        right = Normalize(right);
+        left = Normalize(NormalizeNumberWords(left));
+        right = Normalize(NormalizeNumberWords(right));
         if (left.Length == 0 || right.Length == 0)
         {
             return left == right ? 1 : 0;
@@ -299,6 +769,40 @@ public sealed class TitleMatchingStage : IMatchStage
         var diceSimilarity = 2d * leftTokens.Intersect(rightTokens).Count() /
             (leftTokens.Count + rightTokens.Count);
         return (editSimilarity * 0.7) + (diceSimilarity * 0.3);
+    }
+
+    public static string NormalizeNumberWords(string title) =>
+        NumberWordRegex.Replace(title, match => NumberWords[match.Value]);
+
+    private (bool IsDeal, decimal? DiscountPercent) CalculateDeal(ParsedCandidate candidate)
+    {
+        var currentPrice = candidate.CurrentPrice;
+        var referencePrice = _dealRule switch
+        {
+            DealRule.RepositoryMsrp => candidate.RepositoryMsrp,
+            DealRule.StoreRegularPrice => candidate.RegularPrice,
+            DealRule.Combined when currentPrice is not null &&
+                candidate.RegularPrice is > 0 &&
+                candidate.RegularPrice.Value > currentPrice.Value =>
+                candidate.RegularPrice,
+            DealRule.Combined when currentPrice is not null &&
+                candidate.RepositoryMsrp is > 0 &&
+                candidate.RepositoryMsrp.Value > currentPrice.Value =>
+                candidate.RepositoryMsrp,
+            _ => null
+        };
+        if (currentPrice is null || referencePrice is null || referencePrice <= 0)
+        {
+            return (false, null);
+        }
+
+        var discount = Math.Round(
+            100m * (referencePrice.Value - currentPrice.Value) / referencePrice.Value,
+            2,
+            MidpointRounding.AwayFromZero);
+        return discount > 0
+            ? (true, discount)
+            : (false, null);
     }
 
     private static string Normalize(string value)
@@ -398,7 +902,7 @@ public sealed class SqlitePersistStage : IPersistStage
         CancellationToken cancellationToken)
     {
         var candidate = offer.Candidate;
-        var observationId = candidate.Rating is { } rating
+        var ratingObservationId = candidate.Rating is { } rating
             ? await _repository.SaveRatingAsync(
                 offer.GameId,
                 offer.MatchedCanonicalTitle,
@@ -407,9 +911,38 @@ public sealed class SqlitePersistStage : IPersistStage
                 candidate.RetrievedAt,
                 cancellationToken)
             : 0;
+        var priceObservationId = candidate.CurrentPrice is not null
+            ? await _repository.SavePriceObservationAsync(
+                offer.GameId,
+                offer.MatchedCanonicalTitle,
+                candidate.SourceId,
+                candidate.ProductUrl,
+                candidate.CurrentPrice,
+                candidate.RegularPrice,
+                candidate.Currency,
+                candidate.Format,
+                offer.IsDeal,
+                offer.DiscountPercent,
+                candidate.RetrievedAt,
+                cancellationToken)
+            : 0;
+        if (candidate.MainStoryMinutes is not null ||
+            candidate.StoryAndExtrasMinutes is not null ||
+            candidate.CompletionistMinutes is not null)
+        {
+            await _repository.SavePlaytimeObservationAsync(
+                offer.GameId,
+                offer.MatchedCanonicalTitle,
+                "howlongtobeat",
+                candidate.MainStoryMinutes,
+                candidate.StoryAndExtrasMinutes,
+                candidate.CompletionistMinutes,
+                candidate.RetrievedAt,
+                cancellationToken);
+        }
 
         return new PersistedOffer(
-            observationId,
+            priceObservationId != 0 ? priceObservationId : ratingObservationId,
             offer.GameId,
             candidate.SourceId,
             offer.MatchedCanonicalTitle,
@@ -431,7 +964,14 @@ public sealed class SqlitePersistStage : IPersistStage
 
 public sealed class JsonPublishStage : IPublishStage
 {
-    private readonly string _outputPath;
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true
+    };
+    private readonly string _catalogPath;
+    private readonly string _historyPath;
     private readonly SqliteCatalogRepository _repository;
     private readonly List<PersistedOffer> _offers = new();
     private readonly SemaphoreSlim _sync = new(1, 1);
@@ -439,7 +979,8 @@ public sealed class JsonPublishStage : IPublishStage
     public JsonPublishStage(SqliteCatalogRepository repository)
     {
         _repository = repository;
-        _outputPath = Path.GetFullPath(Path.Combine("web", "data", "catalog.json"));
+        _catalogPath = Path.GetFullPath(Path.Combine("web", "data", "catalog.json"));
+        _historyPath = Path.GetFullPath(Path.Combine("web", "data", "history.json"));
     }
 
     public async Task PublishAsync(
@@ -459,15 +1000,128 @@ public sealed class JsonPublishStage : IPublishStage
 
     public async Task CompleteAsync(CancellationToken cancellationToken)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(_outputPath)!);
-        var temporaryPath = _outputPath + ".tmp";
+        Directory.CreateDirectory(Path.GetDirectoryName(_catalogPath)!);
         var metadata = await _repository.ReadCatalogMetadataAsync(cancellationToken);
-        var offersByGame = _offers
-            .GroupBy(offer => offer.GameId)
+        var previousCatalog = await ReadPreviousCatalogAsync(cancellationToken);
+        var knownGameIds = metadata
+            .Select(game => game.GameId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var previousById = previousCatalog.ToDictionary(
+            game => game.GameId,
+            StringComparer.OrdinalIgnoreCase);
+        metadata = metadata
+            .Select(game => previousById.TryGetValue(game.GameId, out var previous)
+                ? game with
+                {
+                    Msrp = game.Msrp ?? previous.Msrp,
+                    Currency = game.Currency ?? previous.Currency,
+                    CoverImageUrl = game.CoverImageUrl ?? previous.CoverImageUrl,
+                    OpenCriticScore = game.OpenCriticScore ?? previous.OpenCriticScore,
+                    MetacriticScore = game.MetacriticScore ?? previous.MetacriticScore,
+                    MainStoryMinutes = game.MainStoryMinutes ?? previous.MainStoryMinutes,
+                    StoryAndExtrasMinutes =
+                        game.StoryAndExtrasMinutes ?? previous.StoryAndExtrasMinutes,
+                    CompletionistMinutes = game.CompletionistMinutes ?? previous.CompletionistMinutes,
+                    PlaytimeCapturedAt = game.PlaytimeCapturedAt ?? previous.CapturedAt
+                }
+                : game)
+            .Concat(previousCatalog
+                .Where(game => !knownGameIds.Contains(game.GameId))
+                .Select(game => new CatalogGameMetadata(
+                    game.GameId,
+                    game.CanonicalTitle,
+                    game.Type,
+                    game.ReleaseDate,
+                    game.Msrp,
+                    game.Currency,
+                    game.Platforms,
+                    game.CoverImageUrl,
+                    game.OpenCriticScore,
+                    game.MetacriticScore,
+                    game.MainStoryMinutes,
+                    game.StoryAndExtrasMinutes,
+                    game.CompletionistMinutes,
+                    game.CapturedAt)))
+            .ToArray();
+
+        var priceHistory = (await _repository.ReadPriceHistoryAsync(cancellationToken)).ToList();
+        var historyKeys = priceHistory
+            .Select(HistoryKey)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var oldOffer in previousCatalog.SelectMany(game => game.Offers))
+        {
+            if (oldOffer.CurrentPrice is null)
+            {
+                continue;
+            }
+
+            var historyEntry = new PriceHistoryEntry(
+                oldOffer.ObservationId,
+                oldOffer.GameId.ToString("D"),
+                oldOffer.SourceId,
+                oldOffer.CurrentPrice,
+                oldOffer.Currency,
+                oldOffer.Format,
+                oldOffer.CapturedAt,
+                oldOffer.ProductUrl,
+                oldOffer.RegularPrice,
+                oldOffer.IsDeal,
+                oldOffer.DiscountPercent);
+            if (historyKeys.Add(HistoryKey(historyEntry)))
+            {
+                priceHistory.Add(historyEntry);
+            }
+        }
+
+        var currentPriceSources = _offers
+            .Where(offer => offer.CurrentPrice is not null)
+            .Select(offer => $"{offer.GameId:D}|{offer.SourceId}")
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var historicalMinimums = priceHistory
+            .Where(entry => entry.CurrentPrice is not null)
+            .GroupBy(entry => $"{entry.GameId}|{entry.SourceId}", StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
-                group => group.Key.ToString("D"),
-                group => (IReadOnlyList<PersistedOffer>)group.ToArray(),
+                group => group.Key,
+                group => group.Min(entry => entry.CurrentPrice!.Value),
                 StringComparer.OrdinalIgnoreCase);
+        var offersByGame = priceHistory
+            .Where(entry => entry.CurrentPrice is not null)
+            .GroupBy(entry => $"{entry.GameId}|{entry.SourceId}", StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderByDescending(entry => entry.CapturedAt)
+                .ThenByDescending(entry => entry.ObservationId)
+                .First())
+            .GroupBy(entry => entry.GameId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<PersistedOffer>)group.Select(entry =>
+                {
+                    var sourceKey = $"{entry.GameId}|{entry.SourceId}";
+                    var isStale = !currentPriceSources.Contains(sourceKey);
+                    return new PersistedOffer(
+                        entry.ObservationId,
+                        Guid.Parse(entry.GameId),
+                        entry.SourceId,
+                        string.Empty,
+                        entry.ProductUrl,
+                        entry.CurrentPrice,
+                        entry.RegularPrice,
+                        entry.Currency,
+                        entry.Format,
+                        entry.IsDeal,
+                        entry.DiscountPercent,
+                        null,
+                        null,
+                        Array.Empty<string>(),
+                        entry.CapturedAt,
+                        1,
+                        false,
+                        !isStale && historicalMinimums[sourceKey] == entry.CurrentPrice,
+                        isStale,
+                        isStale ? entry.CapturedAt : null);
+                }).ToArray(),
+                StringComparer.OrdinalIgnoreCase);
+        var capturedAt = DateTimeOffset.UtcNow;
         var catalog = metadata
             .GroupBy(game => NormalizeTitle(game.CanonicalTitle), StringComparer.Ordinal)
             .OrderBy(group => group.Key, StringComparer.Ordinal)
@@ -499,27 +1153,61 @@ public sealed class JsonPublishStage : IPublishStage
                         .FirstOrDefault(value => !string.IsNullOrEmpty(value)),
                     entries.Select(entry => entry.OpenCriticScore)
                         .FirstOrDefault(value => value is not null),
+                    entries.Select(entry => entry.MetacriticScore)
+                        .FirstOrDefault(value => value is not null),
+                    entries.Select(entry => entry.MainStoryMinutes)
+                        .FirstOrDefault(value => value is not null),
+                    entries.Select(entry => entry.StoryAndExtrasMinutes)
+                        .FirstOrDefault(value => value is not null),
+                    entries.Select(entry => entry.CompletionistMinutes)
+                        .FirstOrDefault(value => value is not null),
+                    capturedAt,
+                    offers.Any(offer => offer.IsHistoricalLow),
                     offers);
-            });
+            }).ToArray();
 
+        await WriteJsonAsync(_historyPath, priceHistory, cancellationToken);
+        await WriteJsonAsync(_catalogPath, catalog, cancellationToken);
+    }
+
+    private async Task<CatalogExportEntry[]> ReadPreviousCatalogAsync(
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(_catalogPath))
+        {
+            return Array.Empty<CatalogExportEntry>();
+        }
+
+        await using var stream = File.OpenRead(_catalogPath);
+        return await JsonSerializer.DeserializeAsync<CatalogExportEntry[]>(
+            stream,
+            JsonOptions,
+            cancellationToken) ?? Array.Empty<CatalogExportEntry>();
+    }
+
+    private static async Task WriteJsonAsync<T>(
+        string path,
+        T value,
+        CancellationToken cancellationToken)
+    {
+        var temporaryPath = path + ".tmp";
         await using (var stream = File.Create(temporaryPath))
         {
             await JsonSerializer.SerializeAsync(
                 stream,
-                catalog,
-                new JsonSerializerOptions
-                {
-                    WriteIndented = true,
-                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-                },
+                value,
+                JsonOptions,
                 cancellationToken);
         }
 
-        File.Move(temporaryPath, _outputPath, overwrite: true);
+        File.Move(temporaryPath, path, overwrite: true);
     }
 
     private static string NormalizeTitle(string title) =>
         Regex.Replace(title.ToLowerInvariant(), @"[^\p{L}\p{N}]+", " ").Trim();
+
+    private static string HistoryKey(PriceHistoryEntry entry) =>
+        $"{entry.GameId}|{entry.SourceId}|{entry.CapturedAt:O}|{entry.CurrentPrice}";
 
     private sealed record CatalogExportEntry(
         string GameId,
@@ -531,6 +1219,12 @@ public sealed class JsonPublishStage : IPublishStage
         IReadOnlyList<string> Platforms,
         string? CoverImageUrl,
         decimal? OpenCriticScore,
+        decimal? MetacriticScore,
+        int? MainStoryMinutes,
+        int? StoryAndExtrasMinutes,
+        int? CompletionistMinutes,
+        DateTimeOffset CapturedAt,
+        bool IsHistoricalLow,
         IReadOnlyList<PersistedOffer> Offers);
 }
 
@@ -571,11 +1265,13 @@ public static class ChannelStageWorkers
         ChannelReader<ParsedCandidate> input,
         ChannelWriter<MatchedOffer> output,
         IMatchStage stage,
+        PipelineRunMetrics metrics,
         CancellationToken cancellationToken)
     {
         await foreach (var candidate in input.ReadAllAsync(cancellationToken))
         {
             var matched = await stage.MatchAsync(candidate, cancellationToken);
+            metrics.RecordMatch(candidate.GameId, matched);
             if (matched is not null)
             {
                 await output.WriteAsync(matched, cancellationToken);

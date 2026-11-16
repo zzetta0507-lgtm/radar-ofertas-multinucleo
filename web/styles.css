@@ -195,6 +195,8 @@ kbd { display: grid; width: 19px; height: 20px; place-items: center; border: 1px
 .rating-score { display: inline-flex; align-items: center; gap: 4px; color: var(--lime); font: 700 14px var(--font-display); }
 .rating-source { color: var(--subtle); font-size: 8px; font-weight: 700; letter-spacing: .04em; }
 .card-store { margin-top: 10px; color: var(--subtle); font-size: 9px; }
+.stale-label { color: #e6b96d !important; }
+.detail-price-row .stale-label { grid-column: 1 / -1; }
 .card-open { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; margin-top: 12px; padding: 8px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: #c3c6ce; font-size: 10px; font-weight: 700; cursor: pointer; transition: background .2s, color .2s, border-color .2s; }
 .card-open:hover { border-color: var(--lime); background: rgba(200, 241, 105, .08); color: var(--lime); }
 .empty-state { display: grid; justify-items: center; padding: 54px 20px; border: 1px dashed #353945; border-radius: 13px; background: rgba(24, 26, 33, .45); text-align: center; }

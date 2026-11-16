@@ -40,7 +40,8 @@ public sealed record SourceResponse(
     string? Body,
     DateTimeOffset RetrievedAt,
     bool IsSuccessful,
-    string? FailureReason);
+    string? FailureReason,
+    decimal? RepositoryMsrp = null);
 
 public sealed record ParsedCandidate(
     Guid GameId,
@@ -59,7 +60,8 @@ public sealed record ParsedCandidate(
     int? StoryAndExtrasMinutes,
     int? CompletionistMinutes,
     string? CoverImageUrl,
-    DateTimeOffset RetrievedAt);
+    DateTimeOffset RetrievedAt,
+    decimal? RepositoryMsrp = null);
 
 public sealed record MatchedOffer(
     Guid GameId,
@@ -87,7 +89,10 @@ public sealed record PersistedOffer(
     IReadOnlyList<string> Platforms,
     DateTimeOffset CapturedAt,
     double MatchingSimilarity,
-    bool IsUncertainMatch);
+    bool IsUncertainMatch,
+    bool IsHistoricalLow = false,
+    bool IsStale = false,
+    DateTimeOffset? StaleSince = null);
 
 public sealed record CatalogGameMetadata(
     string GameId,
@@ -98,7 +103,25 @@ public sealed record CatalogGameMetadata(
     string? Currency,
     IReadOnlyList<string> Platforms,
     string? CoverImageUrl,
-    decimal? OpenCriticScore);
+    decimal? OpenCriticScore,
+    decimal? MetacriticScore = null,
+    int? MainStoryMinutes = null,
+    int? StoryAndExtrasMinutes = null,
+    int? CompletionistMinutes = null,
+    DateTimeOffset? PlaytimeCapturedAt = null);
+
+public sealed record PriceHistoryEntry(
+    long ObservationId,
+    string GameId,
+    string SourceId,
+    decimal? CurrentPrice,
+    string? Currency,
+    OfferFormat Format,
+    DateTimeOffset CapturedAt,
+    string? ProductUrl,
+    decimal? RegularPrice,
+    bool IsDeal,
+    decimal? DiscountPercent);
 
 public sealed record TitleMatchCandidate(
     Guid GameId,

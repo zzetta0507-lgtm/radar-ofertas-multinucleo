@@ -33,7 +33,8 @@
     bestbuy: "Best Buy",
     target: "Target",
     opencritic: "OpenCritic",
-    metacritic: "Metacritic"
+    metacritic: "Metacritic",
+    gamersgate: "GamersGate"
   };
 
   const state = {
@@ -197,6 +198,8 @@
       url: safeHttpUrl(raw.productUrl ?? raw.url ?? raw.link),
       capturedAt: raw.capturedAt ?? raw.timestamp ?? raw.retrievedAt ?? null,
       historicalLow: Boolean(raw.isHistoricalLow ?? raw.historicalLow ?? raw.isAllTimeLow),
+      isStale: Boolean(raw.isStale ?? raw.stale),
+      staleSince: raw.staleSince ?? null,
       rating: numberOrNull(raw.rating ?? raw.score),
       ratingSource: raw.ratingSource || raw.ratingProvider || raw.sourceId || null
     };
@@ -447,7 +450,7 @@
                 : `<span class="rating-source">SIN CALIFICACIÓN</span>`}
             </div>
           </div>
-          ${sourceLine ? `<p class="card-store">Mejor precio en ${sourceLine}</p>` : ""}
+          ${sourceLine ? `<p class="card-store">Mejor precio en ${sourceLine}${best.isStale ? ` · <span class="stale-label">dato desactualizado desde ${escapeHtml(formatDate(best.staleSince || best.capturedAt))}</span>` : ""}</p>` : ""}
           <button class="card-open" type="button" data-game-id="${escapeHtml(game.id)}">Ver detalle <span aria-hidden="true">→</span></button>
         </div>
       </article>`;
@@ -542,11 +545,17 @@
     const duration = hasMetrics
       ? valueFrom(metricsPayload, ["durationMs", "totalDurationMs", "elapsedMilliseconds"])
       : null;
+    const durationMs = numberOrNull(duration);
+    const mode = hasMetrics
+      ? valueFrom(metricsPayload, ["mode", "executionMode"])
+      : null;
     document.querySelector("#metric-run-date").textContent = formatDate(
       hasMetrics ? valueFrom(metricsPayload, ["lastRunAt", "lastRun", "generatedAt"]) : null,
       { dateStyle: "medium", timeStyle: "short" });
     document.querySelector("#metric-run-duration").textContent =
-      duration === null ? "Duración no disponible" : `Duración: ${formatMilliseconds(duration)}`;
+      durationMs === null
+        ? `Duración no disponible${mode ? ` · ${mode}` : ""}`
+        : `Duración: ${(durationMs / 1000).toFixed(2)} s${mode ? ` · ${mode}` : ""}`;
     document.querySelector("#metric-unmatched").textContent =
       numberOrNull(hasMetrics ? valueFrom(metricsPayload, ["unmatchedGames", "unmatched", "gamesWithoutMatch"]) : null)?.toLocaleString("es-CR") ?? "—";
     document.querySelector("#metric-uncertain").textContent =
@@ -611,6 +620,7 @@
       const success = numberOrNull(row.successful ?? row.success ?? row.successfulRequests) ?? 0;
       const retried = numberOrNull(row.retried ?? row.retries ?? row.retriedRequests) ?? 0;
       const failed = numberOrNull(row.failed ?? row.failures ?? row.failedRequests) ?? 0;
+      const total = numberOrNull(row.total) ?? success + retried + failed;
       return `<div class="request-row">
         <span class="request-name">${escapeHtml(site)}</span>
         <span class="request-counts">
@@ -618,7 +628,7 @@
           <span class="retry" title="Reintentadas">↻ ${retried}</span>
           <span class="failure" title="Fallidas">× ${failed}</span>
         </span>
-        <span class="stage-time">${success + retried + failed}</span>
+        <span class="stage-time">${total}</span>
       </div>`;
     }).join("");
   }
@@ -707,6 +717,7 @@
           <strong>${escapeHtml(offer.store)}</strong>
           <span>${formatMoney(offer.currentPrice, offer.currency)}${offer.regularPrice !== null ? ` <small><s>${formatMoney(offer.regularPrice, offer.currency)}</s></small>` : ""}</span>
           <small>${formatDate(offer.capturedAt)}</small>
+          ${offer.isStale ? `<small class="stale-label">Dato desactualizado desde ${escapeHtml(formatDate(offer.staleSince || offer.capturedAt))}</small>` : ""}
           ${link ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">Abrir tienda ↗</a>` : `<small>Enlace no disponible</small>`}
         </div>`;
       }).join("")

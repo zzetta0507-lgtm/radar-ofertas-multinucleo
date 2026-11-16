@@ -13,6 +13,7 @@ public sealed class PipelineRunner
     private readonly IMatchStage _match;
     private readonly IPersistStage _persist;
     private readonly IPublishStage _publish;
+    private readonly PipelineRunMetrics _metrics;
 
     public PipelineRunner(
         PipelineOptions options,
@@ -21,7 +22,8 @@ public sealed class PipelineRunner
         IParseStage parse,
         IMatchStage match,
         IPersistStage persist,
-        IPublishStage publish)
+        IPublishStage publish,
+        PipelineRunMetrics? metrics = null)
     {
         _options = options;
         _discovery = discovery;
@@ -30,6 +32,7 @@ public sealed class PipelineRunner
         _match = match;
         _persist = persist;
         _publish = publish;
+        _metrics = metrics ?? new PipelineRunMetrics();
     }
 
     public Task RunAsync(ExecutionMode mode, CancellationToken cancellationToken)
@@ -44,7 +47,9 @@ public sealed class PipelineRunner
     private async Task RunSequentialAsync(CancellationToken cancellationToken)
     {
         var channels = new PipelineChannels(_options);
-        var games = await _discovery.DiscoverAsync(cancellationToken);
+        var games = await _metrics.MeasureStageAsync(
+            PipelineRunMetrics.DiscoveryStage,
+            () => _discovery.DiscoverAsync(cancellationToken));
 
         foreach (var game in games)
         {
@@ -53,14 +58,18 @@ public sealed class PipelineRunner
                 game,
                 cancellationToken);
 
-            var responses = await _download.DownloadAsync(queuedGame, cancellationToken);
+            var responses = await _metrics.MeasureStageAsync(
+                PipelineRunMetrics.DownloadStage,
+                () => _download.DownloadAsync(queuedGame, cancellationToken));
             foreach (var response in responses)
             {
                 var queuedResponse = await TransferAsync(
                     channels.DownloadToParse,
                     response,
                     cancellationToken);
-                var candidate = await _parse.ParseAsync(queuedResponse, cancellationToken);
+                var candidate = await _metrics.MeasureStageAsync(
+                    PipelineRunMetrics.ParseStage,
+                    () => _parse.ParseAsync(queuedResponse, cancellationToken));
                 if (candidate is null)
                 {
                     continue;
@@ -70,7 +79,10 @@ public sealed class PipelineRunner
                     channels.ParseToMatch,
                     candidate,
                     cancellationToken);
-                var matched = await _match.MatchAsync(queuedCandidate, cancellationToken);
+                var matched = await _metrics.MeasureStageAsync(
+                    PipelineRunMetrics.MatchStage,
+                    () => _match.MatchAsync(queuedCandidate, cancellationToken));
+                _metrics.RecordMatch(candidate.GameId, matched);
                 if (matched is null)
                 {
                     continue;
@@ -80,14 +92,18 @@ public sealed class PipelineRunner
                     channels.MatchToPersist,
                     matched,
                     cancellationToken);
-                var persisted = await _persist.PersistAsync(queuedMatch, cancellationToken);
+                var persisted = await _metrics.MeasureStageAsync(
+                    PipelineRunMetrics.PersistStage,
+                    () => _persist.PersistAsync(queuedMatch, cancellationToken));
                 if (persisted is not null)
                 {
                     var queuedPersisted = await TransferAsync(
                         channels.PersistToPublish,
                         persisted,
                         cancellationToken);
-                    await _publish.PublishAsync(queuedPersisted, cancellationToken);
+                    await _metrics.MeasureStageAsync(
+                        PipelineRunMetrics.PublishStage,
+                        () => _publish.PublishAsync(queuedPersisted, cancellationToken));
                 }
             }
         }
@@ -106,48 +122,61 @@ public sealed class PipelineRunner
         var tasks = new[]
         {
             RunStageAsync(
-                () => _discovery.RunAsync(channels.DiscoveryToDownload.Writer, token),
+                () => _metrics.MeasureStageAsync(
+                    PipelineRunMetrics.DiscoveryStage,
+                    () => _discovery.RunAsync(channels.DiscoveryToDownload.Writer, token)),
                 channels.DiscoveryToDownload.Writer,
                 pipelineCancellation),
-            RunWorkersAsync(
-                _options.WorkersIo,
-                () => ChannelStageWorkers.RunDownloadWorkersAsync(
-                    channels.DiscoveryToDownload.Reader,
+            _metrics.MeasureStageAsync(
+                PipelineRunMetrics.DownloadStage,
+                () => RunWorkersAsync(
+                    _options.WorkersIo,
+                    () => ChannelStageWorkers.RunDownloadWorkersAsync(
+                        channels.DiscoveryToDownload.Reader,
+                        channels.DownloadToParse.Writer,
+                        _download,
+                        token),
                     channels.DownloadToParse.Writer,
-                    _download,
-                    token),
-                channels.DownloadToParse.Writer,
-                pipelineCancellation),
+                    pipelineCancellation)),
             RunStageAsync(
-                () => ChannelStageWorkers.RunParseWorkerAsync(
-                    channels.DownloadToParse.Reader,
-                    channels.ParseToMatch.Writer,
-                    _parse,
-                    token),
+                () => _metrics.MeasureStageAsync(
+                    PipelineRunMetrics.ParseStage,
+                    () => ChannelStageWorkers.RunParseWorkerAsync(
+                        channels.DownloadToParse.Reader,
+                        channels.ParseToMatch.Writer,
+                        _parse,
+                        token)),
                 channels.ParseToMatch.Writer,
                 pipelineCancellation),
-            RunWorkersAsync(
-                1,
-                () => ChannelStageWorkers.RunMatchWorkerAsync(
-                    channels.ParseToMatch.Reader,
+            _metrics.MeasureStageAsync(
+                PipelineRunMetrics.MatchStage,
+                () => RunWorkersAsync(
+                    1,
+                    () => ChannelStageWorkers.RunMatchWorkerAsync(
+                        channels.ParseToMatch.Reader,
+                        channels.MatchToPersist.Writer,
+                        _match,
+                        _metrics,
+                        token),
                     channels.MatchToPersist.Writer,
-                    _match,
-                    token),
-                channels.MatchToPersist.Writer,
-                pipelineCancellation),
+                    pipelineCancellation)),
             RunStageAsync(
-                () => ChannelStageWorkers.RunPersistWorkerAsync(
-                    channels.MatchToPersist.Reader,
-                    channels.PersistToPublish.Writer,
-                    _persist,
-                    token),
+                () => _metrics.MeasureStageAsync(
+                    PipelineRunMetrics.PersistStage,
+                    () => ChannelStageWorkers.RunPersistWorkerAsync(
+                        channels.MatchToPersist.Reader,
+                        channels.PersistToPublish.Writer,
+                        _persist,
+                        token)),
                 channels.PersistToPublish.Writer,
                 pipelineCancellation),
             RunTerminalStageAsync(
-                () => ChannelStageWorkers.RunPublishWorkerAsync(
-                    channels.PersistToPublish.Reader,
-                    _publish,
-                    token),
+                () => _metrics.MeasureStageAsync(
+                    PipelineRunMetrics.PublishStage,
+                    () => ChannelStageWorkers.RunPublishWorkerAsync(
+                        channels.PersistToPublish.Reader,
+                        _publish,
+                        token)),
                 pipelineCancellation)
         };
 

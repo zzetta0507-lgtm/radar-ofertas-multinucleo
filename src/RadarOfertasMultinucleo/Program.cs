@@ -71,7 +71,8 @@ internal static class App
                 options,
                 command.SourceMode,
                 command.RecordReplay,
-                CancellationToken.None);
+                CancellationToken.None,
+                exportMetrics: true);
             Console.WriteLine("Pipeline finalizado; catálogo actualizado en data/radar.db.");
             return 0;
         }
@@ -88,12 +89,14 @@ internal static class App
         PipelineOptions options,
         HttpSourceMode sourceMode,
         bool recordReplay,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool exportMetrics = false)
     {
+        var metrics = new PipelineRunMetrics();
         var seedCatalog = await CatalogSeedCatalog.LoadAsync(
             options.CatalogSeedFile,
             cancellationToken);
-        using var http = new ReplayableHttpClient(options, sourceMode, recordReplay);
+        using var http = new ReplayableHttpClient(options, sourceMode, recordReplay, metrics);
         var repository = new SqliteCatalogRepository(options, seedCatalog);
         var titleCandidates = new TitleCandidatePool();
         var discovery = new OpenCriticDiscoveryStage(
@@ -105,12 +108,19 @@ internal static class App
         var runner = new PipelineRunner(
             options,
             discovery,
-            new OpenCriticDownloadStage(http),
-            new OpenCriticParseStage(),
-            new TitleMatchingStage(options.MatchingThreshold, titleCandidates),
+            new StoreAndMetadataDownloadStage(http, options.MatchingThreshold),
+            new CatalogSourceParseStage(),
+            new TitleMatchingStage(options.MatchingThreshold, options.DealRule, titleCandidates),
             new SqlitePersistStage(repository),
-            new JsonPublishStage(repository));
+            new JsonPublishStage(repository),
+            metrics);
         await runner.RunAsync(options.Mode, cancellationToken);
+        if (exportMetrics)
+        {
+            await PipelineRunMetrics.WriteAsync(
+                metrics.CreateReport(options.Mode),
+                cancellationToken);
+        }
     }
 
     private static async Task WriteMatchingValidationAsync(
@@ -153,12 +163,16 @@ internal static class App
                     options.Mode = mode;
                     break;
                 case "--source":
-                    if (++index >= args.Length || !args[index].Equals("replay", StringComparison.OrdinalIgnoreCase))
+                    if (++index >= args.Length ||
+                        (!args[index].Equals("replay", StringComparison.OrdinalIgnoreCase) &&
+                         !args[index].Equals("live", StringComparison.OrdinalIgnoreCase)))
                     {
-                        throw new ArgumentException("El único origen sin red disponible es --source replay.");
+                        throw new ArgumentException("Uso: --source live|replay.");
                     }
 
-                    sourceMode = HttpSourceMode.Replay;
+                    sourceMode = args[index].Equals("replay", StringComparison.OrdinalIgnoreCase)
+                        ? HttpSourceMode.Replay
+                        : HttpSourceMode.Live;
                     break;
                 case "--record-replay":
                     recordReplay = true;

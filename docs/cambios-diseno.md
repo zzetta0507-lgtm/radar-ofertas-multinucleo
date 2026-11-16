@@ -23,8 +23,10 @@ Este documento registra cambios de diseño y distingue decisiones implementadas 
 
 ## Funcionalidad pendiente respecto al diseño de producto
 
-- El catálogo actual descubre metadatos de OpenCritic y Steam; los conectores completos de precios, minoristas, Metacritic y How Long To Beat aún deben integrarse.
-- `deal_rule` está definido en configuración, pero el cálculo de `IsDeal`, descuentos y mínimos históricos queda pendiente de la etapa de precios. Ver [ADR 004](./adr/004-definicion-oferta.md).
+- El pipeline consulta precios digitales de Steam y GamersGate; usa las calificaciones de OpenCritic y el metascore de Steam como dato de Metacritic. Las observaciones de precio se guardan en SQLite sin sobrescribir el historial y se exportan a `web/data/history.json`.
+- Si una tienda no responde, se conserva su última observación conocida y se publica como desactualizada con la fecha de captura. GitHub Actions conserva además la publicación anterior si falla la ejecución completa.
+- How Long To Beat no se consulta automáticamente: la extracción/API no está autorizada para este proyecto según las restricciones verificadas del servicio. Se requiere permiso o un proveedor/dataset autorizado antes de agregar ese conector; por ahora los tiempos pueden permanecer vacíos.
+- `deal_rule` calcula `IsDeal` y el descuento usando el MSRP, el precio regular de tienda o el criterio combinado configurado. El mínimo histórico se determina a partir de las observaciones guardadas. Ver [ADR 004](./adr/004-definicion-oferta.md).
 - La interfaz tolera la ausencia de archivos de métricas y muestra estados vacíos; no se deben interpretar esos estados como mediciones iguales a cero.
 
 ## Hito 1: análisis teórico de rendimiento

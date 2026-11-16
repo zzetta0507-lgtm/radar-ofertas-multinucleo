@@ -1,0 +1,50 @@
+{
+  "generatedAt": "2026-11-16T23:34:38.692328+00:00",
+  "lastRunAt": "2026-11-16T23:34:31.5975293+00:00",
+  "mode": "Parallel",
+  "durationMs": 7095.9896,
+  "unmatchedGames": 4,
+  "uncertainMatches": 50,
+  "stageDurations": [
+    {
+      "name": "Descubrimiento",
+      "durationMs": 6959.2802
+    },
+    {
+      "name": "Descarga",
+      "durationMs": 6870.0701
+    },
+    {
+      "name": "An\u00E1lisis",
+      "durationMs": 6861.6153
+    },
+    {
+      "name": "Emparejamiento",
+      "durationMs": 6860.5854
+    },
+    {
+      "name": "Persistencia",
+      "durationMs": 6858.8832
+    },
+    {
+      "name": "Publicaci\u00F3n",
+      "durationMs": 6963.1083
+    }
+  ],
+  "requestsBySite": [
+    {
+      "site": "OpenCritic",
+      "successful": 1007,
+      "retried": 0,
+      "failed": 0,
+      "total": 1007
+    },
+    {
+      "site": "Steam",
+      "successful": 6,
+      "retried": 0,
+      "failed": 0,
+      "total": 6
+    }
+  ]
+}

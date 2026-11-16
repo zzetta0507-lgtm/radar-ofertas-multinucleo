@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using RadarOfertasMultinucleo.Configuration;
+using RadarOfertasMultinucleo.Pipeline;
 
 namespace RadarOfertasMultinucleo.Infrastructure.Replay;
 
@@ -25,6 +26,7 @@ public sealed class ReplayableHttpClient : IDisposable
     private readonly PipelineOptions _options;
     private readonly HttpSourceMode _sourceMode;
     private readonly bool _recordReplay;
+    private readonly PipelineRunMetrics? _metrics;
     private readonly string _replayDirectory;
     private readonly DomainRequestLimiter _limiter;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _requestLocks = new();
@@ -34,11 +36,13 @@ public sealed class ReplayableHttpClient : IDisposable
     public ReplayableHttpClient(
         PipelineOptions options,
         HttpSourceMode sourceMode,
-        bool recordReplay)
+        bool recordReplay,
+        PipelineRunMetrics? metrics = null)
     {
         _options = options;
         _sourceMode = sourceMode;
         _recordReplay = recordReplay;
+        _metrics = metrics;
         _replayDirectory = Path.GetFullPath(options.ReplayDirectory);
         _limiter = new DomainRequestLimiter(
             options.MaxConcurrentRequestsPerDomain,
@@ -78,6 +82,7 @@ public sealed class ReplayableHttpClient : IDisposable
         var recorded = await GetRecordedResponseAsync(uri, cancellationToken);
         if (recorded is not null)
         {
+            RecordRequest(uri, recorded);
             await ApplyReplayLatencyAsync(uri, cancellationToken);
             return EnsureSuccessfulResponse(uri, recorded);
         }
@@ -95,17 +100,11 @@ public sealed class ReplayableHttpClient : IDisposable
             recorded = await GetRecordedResponseAsync(uri, cancellationToken);
             if (recorded is not null)
             {
+                RecordRequest(uri, recorded);
                 return EnsureSuccessfulResponse(uri, recorded);
             }
 
-            using var permit = await _limiter.AcquireAsync(uri.Host, cancellationToken);
-            using var response = await _client.GetAsync(uri, cancellationToken);
-            var result = new RecordedHttpResponse(
-                uri.AbsoluteUri,
-                (int)response.StatusCode,
-                response.Content.Headers.ContentType?.ToString() ?? "text/plain",
-                await response.Content.ReadAsStringAsync(cancellationToken),
-                DateTimeOffset.UtcNow);
+            var result = await SendRequestAsync(uri, cancellationToken);
             _memoryResponses[uri.AbsoluteUri] = result;
 
             if (_recordReplay)
@@ -150,6 +149,7 @@ public sealed class ReplayableHttpClient : IDisposable
         var cached = await GetRecordedResponseAsync(uri, cancellationToken);
         if (cached is not null)
         {
+            RecordRequest(uri, cached);
             return cached;
         }
 
@@ -159,14 +159,7 @@ public sealed class ReplayableHttpClient : IDisposable
                 $"Falta robots.txt grabado para {uri}; el modo replay no usa la red.");
         }
 
-        using var permit = await _limiter.AcquireAsync(uri.Host, cancellationToken);
-        using var response = await _client.GetAsync(uri, cancellationToken);
-        var result = new RecordedHttpResponse(
-            uri.AbsoluteUri,
-            (int)response.StatusCode,
-            response.Content.Headers.ContentType?.ToString() ?? "text/plain",
-            await response.Content.ReadAsStringAsync(cancellationToken),
-            DateTimeOffset.UtcNow);
+        var result = await SendRequestAsync(uri, cancellationToken);
         _memoryResponses[uri.AbsoluteUri] = result;
         if (_recordReplay)
         {
@@ -175,6 +168,45 @@ public sealed class ReplayableHttpClient : IDisposable
 
         return result;
     }
+
+    private async Task<RecordedHttpResponse> SendRequestAsync(
+        Uri uri,
+        CancellationToken cancellationToken)
+    {
+        using var permit = await _limiter.AcquireAsync(uri.Host, cancellationToken);
+        try
+        {
+            using var response = await _client.GetAsync(uri, cancellationToken);
+            var result = new RecordedHttpResponse(
+                uri.AbsoluteUri,
+                (int)response.StatusCode,
+                response.Content.Headers.ContentType?.ToString() ?? "text/plain",
+                await response.Content.ReadAsStringAsync(cancellationToken),
+                DateTimeOffset.UtcNow);
+            RecordRequest(uri, result);
+            return result;
+        }
+        catch (HttpRequestException)
+        {
+            _metrics?.RecordHttpRequest(uri, successful: false);
+            throw;
+        }
+        catch (IOException)
+        {
+            _metrics?.RecordHttpRequest(uri, successful: false);
+            throw;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _metrics?.RecordHttpRequest(uri, successful: false);
+            throw;
+        }
+    }
+
+    private void RecordRequest(Uri uri, RecordedHttpResponse response) =>
+        _metrics?.RecordHttpRequest(
+            uri,
+            response.StatusCode is >= 200 and < 300);
 
     private static DownloadedPage EnsureSuccessfulResponse(Uri uri, RecordedHttpResponse response)
     {

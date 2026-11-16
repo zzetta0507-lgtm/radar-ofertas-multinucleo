@@ -112,8 +112,22 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
         var hardCases = 0;
         var platformFamilies = new HashSet<string>(StringComparer.Ordinal);
 
-        var sitemapIndex = XDocument.Parse(
-            await _http.GetStringAsync(new Uri(OpenCriticBase + "/sitemap.xml"), cancellationToken));
+        XDocument sitemapIndex;
+        try
+        {
+            sitemapIndex = XDocument.Parse(
+                await _http.GetStringAsync(
+                    new Uri(OpenCriticBase + "/sitemap.xml"),
+                    cancellationToken));
+        }
+        catch (Exception exception) when (
+            exception is HttpRequestException or IOException or InvalidOperationException)
+        {
+            Console.Error.WriteLine(
+                $"Aviso: no se pudo consultar el índice de OpenCritic ({exception.Message}); " +
+                "se conservarán los datos ya guardados.");
+            return;
+        }
         var gameSitemaps = sitemapIndex
             .Descendants()
             .Where(node => node.Name.LocalName == "loc")
@@ -125,7 +139,21 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
         foreach (var sitemapUrl in gameSitemaps)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var sitemap = XDocument.Parse(await _http.GetStringAsync(new Uri(sitemapUrl), cancellationToken));
+            XDocument sitemap;
+            try
+            {
+                sitemap = XDocument.Parse(
+                    await _http.GetStringAsync(new Uri(sitemapUrl), cancellationToken));
+            }
+            catch (Exception exception) when (
+                exception is HttpRequestException or IOException or InvalidOperationException)
+            {
+                Console.Error.WriteLine(
+                    $"Aviso: no se pudo consultar un sitemap de OpenCritic " +
+                    $"({exception.Message}); se conservarán los datos ya guardados.");
+                return;
+            }
+
             allGameUrls.AddRange(sitemap
                 .Descendants()
                 .Where(node => node.Name.LocalName == "loc")
@@ -161,7 +189,19 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
             }
 
             pageCount++;
-            var page = await _http.GetStringAsync(gameUri, cancellationToken);
+            string page;
+            try
+            {
+                page = await _http.GetStringAsync(gameUri, cancellationToken);
+            }
+            catch (Exception exception) when (
+                exception is HttpRequestException or IOException or InvalidOperationException)
+            {
+                Console.Error.WriteLine(
+                    $"Aviso: no se pudo consultar {gameUri} ({exception.Message}); se omite esta página.");
+                continue;
+            }
+
             var game = ParseOpenCriticGame(openCriticId, gameUrl, page);
             if (game is null)
             {
@@ -192,12 +232,22 @@ public sealed class OpenCriticDiscoveryStage : IDiscoveryStage
             publish,
             cancellationToken);
 
-        await ImportSteamPagesAsync(
-            discovered,
-            normalizedTitles,
-            Math.Max(0, _options.CatalogMaxPages - pageCount),
-            publish,
-            cancellationToken);
+        try
+        {
+            await ImportSteamPagesAsync(
+                discovered,
+                normalizedTitles,
+                Math.Max(0, _options.CatalogMaxPages - pageCount),
+                publish,
+                cancellationToken);
+        }
+        catch (Exception exception) when (
+            exception is HttpRequestException or IOException or InvalidOperationException)
+        {
+            Console.Error.WriteLine(
+                $"Aviso: no se pudo ampliar el catálogo desde Steam ({exception.Message}); " +
+                "se conservarán los datos ya guardados.");
+        }
 
         hardCases = discovered.Count(game => game.DifficultCaseTags.Count > 0);
         platformFamilies = discovered.SelectMany(game => game.Platforms)

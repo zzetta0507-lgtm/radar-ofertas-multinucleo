@@ -53,7 +53,9 @@ public sealed class SqliteCatalogRepository
                 INSERT INTO sources (id, name, source_type, base_url)
                 VALUES
                     ('opencritic', 'OpenCritic', 'calificacion', 'https://opencritic.com'),
-                    ('steam', 'Steam', 'tienda', 'https://store.steampowered.com')
+                    ('steam', 'Steam', 'tienda', 'https://store.steampowered.com'),
+                    ('metacritic', 'Metacritic', 'calificacion', 'https://www.metacritic.com'),
+                    ('gamersgate', 'GamersGate', 'tienda', 'https://www.gamersgate.com')
                 ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name,
                     source_type = excluded.source_type,
@@ -147,6 +149,41 @@ public sealed class SqliteCatalogRepository
                     WHERE ro.game_id = g.id AND ro.source_id = 'opencritic'
                     ORDER BY ro.captured_at DESC
                     LIMIT 1
+                ),
+                (
+                    SELECT ro.score
+                    FROM rating_observations ro
+                    WHERE ro.game_id = g.id AND ro.source_id = 'metacritic'
+                    ORDER BY ro.captured_at DESC
+                    LIMIT 1
+                ),
+                (
+                    SELECT po.main_story_minutes
+                    FROM playtime_observations po
+                    WHERE po.game_id = g.id AND po.source_id = 'howlongtobeat'
+                    ORDER BY po.captured_at DESC
+                    LIMIT 1
+                ),
+                (
+                    SELECT po.story_and_extras_minutes
+                    FROM playtime_observations po
+                    WHERE po.game_id = g.id AND po.source_id = 'howlongtobeat'
+                    ORDER BY po.captured_at DESC
+                    LIMIT 1
+                ),
+                (
+                    SELECT po.completionist_minutes
+                    FROM playtime_observations po
+                    WHERE po.game_id = g.id AND po.source_id = 'howlongtobeat'
+                    ORDER BY po.captured_at DESC
+                    LIMIT 1
+                ),
+                (
+                    SELECT po.captured_at
+                    FROM playtime_observations po
+                    WHERE po.game_id = g.id AND po.source_id = 'howlongtobeat'
+                    ORDER BY po.captured_at DESC
+                    LIMIT 1
                 )
             FROM games g
             ORDER BY g.canonical_title COLLATE NOCASE, g.id;
@@ -170,10 +207,64 @@ public sealed class SqliteCatalogRepository
                 reader.IsDBNull(7) ? null : reader.GetString(7),
                 reader.IsDBNull(8)
                     ? null
-                    : Convert.ToDecimal(reader.GetValue(8), CultureInfo.InvariantCulture)));
+                    : Convert.ToDecimal(reader.GetValue(8), CultureInfo.InvariantCulture),
+                reader.IsDBNull(9)
+                    ? null
+                    : Convert.ToDecimal(reader.GetValue(9), CultureInfo.InvariantCulture),
+                reader.IsDBNull(10) ? null : reader.GetInt32(10),
+                reader.IsDBNull(11) ? null : reader.GetInt32(11),
+                reader.IsDBNull(12) ? null : reader.GetInt32(12),
+                reader.IsDBNull(13)
+                    ? null
+                    : DateTimeOffset.Parse(
+                        reader.GetString(13),
+                        CultureInfo.InvariantCulture,
+                        DateTimeStyles.RoundtripKind)));
         }
 
         return games;
+    }
+
+    public async Task<IReadOnlyList<PriceHistoryEntry>> ReadPriceHistoryAsync(
+        CancellationToken cancellationToken)
+    {
+        var history = new List<PriceHistoryEntry>();
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, game_id, source_id, current_price, currency, format, captured_at,
+                   product_url, regular_price, is_deal, discount_percent
+            FROM price_observations
+            WHERE current_price IS NOT NULL
+            ORDER BY captured_at, id;
+            """;
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            history.Add(new PriceHistoryEntry(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                Convert.ToDecimal(reader.GetValue(3), CultureInfo.InvariantCulture),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                ParseOfferFormat(reader.GetString(5)),
+                DateTimeOffset.Parse(
+                    reader.GetString(6),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind),
+                reader.IsDBNull(7) ? null : reader.GetString(7),
+                reader.IsDBNull(8)
+                    ? null
+                    : Convert.ToDecimal(reader.GetValue(8), CultureInfo.InvariantCulture),
+                reader.GetInt32(9) != 0,
+                reader.IsDBNull(10)
+                    ? null
+                    : Convert.ToDecimal(reader.GetValue(10), CultureInfo.InvariantCulture)));
+        }
+
+        return history;
     }
 
     public async Task SaveGameAsync(GameRecord game, CancellationToken cancellationToken)
@@ -340,6 +431,139 @@ public sealed class SqliteCatalogRepository
         }
     }
 
+    public async Task<long> SavePriceObservationAsync(
+            Guid gameId,
+            string canonicalTitle,
+            string sourceId,
+            string? productUrl,
+            decimal? currentPrice,
+            decimal? regularPrice,
+            string? currency,
+            OfferFormat format,
+            bool isDeal,
+            decimal? discountPercent,
+            DateTimeOffset capturedAt,
+            CancellationToken cancellationToken)
+        {
+            if (currentPrice is null)
+            {
+                throw new ArgumentException("Una observación de precio requiere precio actual.", nameof(currentPrice));
+            }
+
+            await _writeLock.WaitAsync(cancellationToken);
+            try
+            {
+                await using var connection = new SqliteConnection(_connectionString);
+                await connection.OpenAsync(cancellationToken);
+                using var transaction = connection.BeginTransaction();
+                await ExecuteAsync(
+                    connection,
+                    transaction,
+                    """
+                    INSERT OR IGNORE INTO games (id, canonical_title, type)
+                    VALUES ($id, $title, 'juego');
+                    """,
+                    cancellationToken,
+                    ("$id", gameId.ToString("D")),
+                    ("$title", canonicalTitle));
+                await EnsureSourceAsync(connection, transaction, sourceId, cancellationToken);
+
+                await using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = """
+                    INSERT INTO price_observations (
+                        game_id, source_id, captured_at, product_url, current_price,
+                        regular_price, currency, format, is_deal, discount_percent)
+                    VALUES (
+                        $gameId, $sourceId, $capturedAt, $productUrl, $currentPrice,
+                        $regularPrice, $currency, $format, $isDeal, $discountPercent)
+                    RETURNING id;
+                    """;
+                command.Parameters.AddWithValue("$gameId", gameId.ToString("D"));
+                command.Parameters.AddWithValue("$sourceId", sourceId);
+                command.Parameters.AddWithValue("$capturedAt", capturedAt.ToUniversalTime().ToString("O"));
+                command.Parameters.AddWithValue("$productUrl", (object?)productUrl ?? DBNull.Value);
+                command.Parameters.AddWithValue("$currentPrice", currentPrice.Value);
+                command.Parameters.AddWithValue("$regularPrice", (object?)regularPrice ?? DBNull.Value);
+                command.Parameters.AddWithValue("$currency", (object?)currency ?? DBNull.Value);
+                command.Parameters.AddWithValue("$format", ToDatabaseFormat(format));
+                command.Parameters.AddWithValue("$isDeal", isDeal ? 1 : 0);
+                command.Parameters.AddWithValue("$discountPercent", (object?)discountPercent ?? DBNull.Value);
+                var observationId = (long)(await command.ExecuteScalarAsync(cancellationToken)
+                    ?? throw new InvalidOperationException("No se obtuvo el identificador de precio."));
+                await transaction.CommitAsync(cancellationToken);
+                return observationId;
+            }
+            finally
+            {
+                _writeLock.Release();
+            }
+        }
+
+    public async Task SavePlaytimeObservationAsync(
+            Guid gameId,
+            string canonicalTitle,
+            string sourceId,
+            int? mainStoryMinutes,
+            int? storyAndExtrasMinutes,
+            int? completionistMinutes,
+            DateTimeOffset capturedAt,
+            CancellationToken cancellationToken)
+        {
+            if (mainStoryMinutes is null &&
+                storyAndExtrasMinutes is null &&
+                completionistMinutes is null)
+            {
+                throw new ArgumentException("La observación de duración no contiene tiempos.");
+            }
+
+            await _writeLock.WaitAsync(cancellationToken);
+            try
+            {
+                await using var connection = new SqliteConnection(_connectionString);
+                await connection.OpenAsync(cancellationToken);
+                using var transaction = connection.BeginTransaction();
+                await ExecuteAsync(
+                    connection,
+                    transaction,
+                    """
+                    INSERT OR IGNORE INTO games (id, canonical_title, type)
+                    VALUES ($id, $title, 'juego');
+                    """,
+                    cancellationToken,
+                    ("$id", gameId.ToString("D")),
+                    ("$title", canonicalTitle));
+                await EnsureSourceAsync(connection, transaction, sourceId, cancellationToken);
+
+                await using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = """
+                    INSERT INTO playtime_observations (
+                        game_id, source_id, captured_at, main_story_minutes,
+                        story_and_extras_minutes, completionist_minutes)
+                    VALUES (
+                        $gameId, $sourceId, $capturedAt, $mainStory,
+                        $storyAndExtras, $completionist)
+                    ON CONFLICT(game_id, source_id, captured_at) DO UPDATE SET
+                        main_story_minutes = excluded.main_story_minutes,
+                        story_and_extras_minutes = excluded.story_and_extras_minutes,
+                        completionist_minutes = excluded.completionist_minutes;
+                    """;
+                command.Parameters.AddWithValue("$gameId", gameId.ToString("D"));
+                command.Parameters.AddWithValue("$sourceId", sourceId);
+                command.Parameters.AddWithValue("$capturedAt", capturedAt.ToUniversalTime().ToString("O"));
+                command.Parameters.AddWithValue("$mainStory", (object?)mainStoryMinutes ?? DBNull.Value);
+                command.Parameters.AddWithValue("$storyAndExtras", (object?)storyAndExtrasMinutes ?? DBNull.Value);
+                command.Parameters.AddWithValue("$completionist", (object?)completionistMinutes ?? DBNull.Value);
+                await command.ExecuteNonQueryAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+            }
+            finally
+            {
+                _writeLock.Release();
+            }
+        }
+
     private static async Task ExecuteAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -377,6 +601,7 @@ public sealed class SqliteCatalogRepository
             "steam" => ("Steam", "tienda", "https://store.steampowered.com"),
             "metacritic" => ("Metacritic", "calificacion", "https://www.metacritic.com"),
             "howlongtobeat" => ("How Long To Beat", "duracion", "https://howlongtobeat.com"),
+            "gamersgate" => ("GamersGate", "tienda", "https://www.gamersgate.com"),
             "catalog-seed" => ("Catálogo de semillas", "metadatos", "https://store.steampowered.com"),
             _ => throw new InvalidOperationException(
                 $"No hay metadatos de fuente configurados para '{sourceId}'.")
@@ -408,5 +633,22 @@ public sealed class SqliteCatalogRepository
             GameType.Dlc => "DLC",
             GameType.Other => "otro",
             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Tipo de juego desconocido.")
+        };
+
+    private static string ToDatabaseFormat(OfferFormat format) =>
+        format switch
+        {
+            OfferFormat.Physical => "fisico",
+            OfferFormat.Digital => "digital",
+            OfferFormat.Unknown => "desconocido",
+            _ => throw new ArgumentOutOfRangeException(nameof(format), format, "Formato de oferta desconocido.")
+        };
+
+    private static OfferFormat ParseOfferFormat(string format) =>
+        format switch
+        {
+            "fisico" => OfferFormat.Physical,
+            "digital" => OfferFormat.Digital,
+            _ => OfferFormat.Unknown
         };
 }

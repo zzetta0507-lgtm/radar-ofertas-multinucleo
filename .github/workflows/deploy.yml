@@ -33,8 +33,14 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: Ejecutar el radar
-        run: dotnet run --project src/RadarOfertasMultinucleo --configuration Release -- --mode parallel
+        id: pipeline
+        continue-on-error: true
+        run: dotnet run --project src/RadarOfertasMultinucleo --configuration Release -- --mode parallel --source live
         timeout-minutes: 360
+
+      - name: Conservar la última publicación si falla la captura
+        if: steps.pipeline.outcome == 'failure'
+        run: echo "::warning::Falló una o más fuentes; se publicará el último catálogo válido del repositorio."
 
       - name: Publicar cambios de datos
         run: |
