@@ -43,13 +43,36 @@ internal static class App
                 await repository.InitializeAsync(CancellationToken.None);
                 var result = await new PriceHistorySeedService(repository)
                     .SeedThroughTodayAsync(CancellationToken.None);
-                await new JsonPublishStage(repository).CompleteAsync(CancellationToken.None);
+                await new JsonPublishStage(repository, seedCatalog)
+                    .CompleteAsync(CancellationToken.None);
                 Console.WriteLine(
                     $"Historial hasta {result.ThroughDate:yyyy-MM-dd}: " +
                     $"{result.GameStorePairs} pares juego-tienda, " +
                     $"{result.EstimatedObservations} puntos estimados añadidos, " +
                     $"{result.ImportedObservations} observaciones existentes importadas y " +
                     $"{result.PairsWithRealCurrentPrice} precios reales del día.");
+                return 0;
+            }
+
+            if (command.EnrichCatalog)
+            {
+                var seedCatalog = await CatalogSeedCatalog.LoadAsync(
+                    options.CatalogSeedFile,
+                    CancellationToken.None);
+                var repository = new SqliteCatalogRepository(options, seedCatalog);
+                await repository.InitializeAsync(CancellationToken.None);
+                using var enrichment = new CatalogMetadataEnrichmentService(
+                    repository,
+                    seedCatalog,
+                    options);
+                var result = await enrichment.EnrichAsync(
+                    command.SourceMode == HttpSourceMode.Live,
+                    int.MaxValue,
+                    CancellationToken.None,
+                    enrichPlaytime: !command.NarrativeOnly);
+                await new JsonPublishStage(repository, seedCatalog)
+                    .CompleteAsync(CancellationToken.None);
+                WriteEnrichmentSummary(result);
                 return 0;
             }
 
@@ -78,7 +101,12 @@ internal static class App
                 var benchmark = new PipelineBenchmarkRunner(
                     options,
                     (runOptions, cancellationToken) =>
-                        RunPipelineAsync(runOptions, HttpSourceMode.Replay, false, cancellationToken));
+                        RunPipelineAsync(
+                            runOptions,
+                            HttpSourceMode.Replay,
+                            false,
+                            cancellationToken,
+                            enrichCatalog: false));
                 await benchmark.RunAsync(CancellationToken.None);
                 Console.WriteLine("Benchmarks exportados a web/data/benchmarks.json y benchmarks.csv.");
                 return 0;
@@ -109,7 +137,8 @@ internal static class App
         HttpSourceMode sourceMode,
         bool recordReplay,
         CancellationToken cancellationToken,
-        bool exportMetrics = false)
+        bool exportMetrics = false,
+        bool enrichCatalog = true)
     {
         var metrics = new PipelineRunMetrics();
         var seedCatalog = await CatalogSeedCatalog.LoadAsync(
@@ -135,9 +164,24 @@ internal static class App
             new CatalogSourceParseStage(),
             new TitleMatchingStage(options.MatchingThreshold, options.DealRule, titleCandidates),
             new SqlitePersistStage(repository),
-            new JsonPublishStage(repository),
+            new JsonPublishStage(repository, seedCatalog),
             metrics);
         await runner.RunAsync(options.Mode, cancellationToken);
+        if (enrichCatalog)
+        {
+            using var enrichment = new CatalogMetadataEnrichmentService(
+                repository,
+                seedCatalog,
+                options);
+            var result = await enrichment.EnrichAsync(
+                sourceMode == HttpSourceMode.Live,
+                maxGames: 60,
+                cancellationToken);
+            await new JsonPublishStage(repository, seedCatalog)
+                .CompleteAsync(cancellationToken);
+            WriteEnrichmentSummary(result);
+        }
+
         if (exportMetrics)
         {
             await PipelineRunMetrics.WriteAsync(
@@ -172,6 +216,8 @@ internal static class App
         var runBenchmarks = false;
         var validateMatching = false;
         var seedHistory = false;
+        var enrichCatalog = false;
+        var narrativeOnly = false;
         for (var index = 0; index < args.Length; index++)
         {
             switch (args[index])
@@ -213,6 +259,12 @@ internal static class App
                 case "--seed-history":
                     seedHistory = true;
                     break;
+                case "--enrich-catalog":
+                    enrichCatalog = true;
+                    break;
+                case "--narrative-only":
+                    narrativeOnly = true;
+                    break;
                 default:
                     throw new ArgumentException($"Argumento desconocido: {args[index]}.");
             }
@@ -243,9 +295,21 @@ internal static class App
 
         if (seedHistory &&
             (recordReplay || sourceMode == HttpSourceMode.Replay || benchmarkContention ||
-             runBenchmarks || validateMatching))
+             runBenchmarks || validateMatching || enrichCatalog))
         {
             throw new ArgumentException("--seed-history no se combina con otros modos de ejecución.");
+        }
+
+        if (enrichCatalog &&
+            (recordReplay || benchmarkContention || runBenchmarks || validateMatching))
+        {
+            throw new ArgumentException(
+                "--enrich-catalog no se combina con grabación, benchmarks ni validación.");
+        }
+
+        if (narrativeOnly && !enrichCatalog)
+        {
+            throw new ArgumentException("--narrative-only requiere --enrich-catalog.");
         }
 
         return new RunCommand(
@@ -254,8 +318,18 @@ internal static class App
             benchmarkContention,
             runBenchmarks,
             validateMatching,
-            seedHistory);
+            seedHistory,
+            enrichCatalog,
+            narrativeOnly);
     }
+
+    private static void WriteEnrichmentSummary(CatalogEnrichmentResult result) =>
+        Console.WriteLine(
+            $"Enriquecimiento de {result.TotalGames} juegos: " +
+            $"{result.ProcessedGames} consultados, " +
+            $"{result.MetadataResults} registros narrativos de Steam/GOG/semillas, " +
+            $"{result.HowLongToBeatResults} resultados de How Long To Beat y " +
+            $"{result.EstimatedPlaytimeRecords} estimaciones heurísticas.");
 
     private sealed record RunCommand(
         HttpSourceMode SourceMode,
@@ -263,5 +337,7 @@ internal static class App
         bool BenchmarkContention,
         bool RunBenchmarks,
         bool ValidateMatching,
-        bool SeedHistory);
+        bool SeedHistory,
+        bool EnrichCatalog,
+        bool NarrativeOnly);
 }

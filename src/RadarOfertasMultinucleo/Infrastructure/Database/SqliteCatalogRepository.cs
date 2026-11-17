@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Globalization;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RadarOfertasMultinucleo.Configuration;
 using RadarOfertasMultinucleo.Domain;
@@ -49,6 +50,8 @@ public sealed class SqliteCatalogRepository
             }
 
             await EnsureEstimatedHistoryColumnAsync(connection, cancellationToken);
+            await EnsureCatalogEnrichmentColumnsAsync(connection, cancellationToken);
+            await EnsureEstimatedPlaytimeColumnAsync(connection, cancellationToken);
 
             await using var sourceCommand = connection.CreateCommand();
             sourceCommand.CommandText = """
@@ -100,6 +103,69 @@ public sealed class SqliteCatalogRepository
             await using var alterCommand = connection.CreateCommand();
             alterCommand.CommandText = """
                 ALTER TABLE price_observations
+                ADD COLUMN is_estimated INTEGER NOT NULL DEFAULT 0
+                    CHECK (is_estimated IN (0, 1));
+                """;
+            await alterCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    private static async Task EnsureCatalogEnrichmentColumnsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "PRAGMA table_info(games);";
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                columns.Add(reader.GetString(1));
+            }
+        }
+
+        var additions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["short_description"] = "TEXT",
+            ["genres_json"] = "TEXT",
+            ["developer"] = "TEXT",
+            ["metadata_checked_at"] = "TEXT",
+            ["playtime_checked_at"] = "TEXT"
+        };
+        foreach (var (column, type) in additions)
+        {
+            if (columns.Contains(column)) continue;
+            await using var command = connection.CreateCommand();
+            command.CommandText = $"ALTER TABLE games ADD COLUMN {column} {type};";
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    private static async Task EnsureEstimatedPlaytimeColumnAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var columnsCommand = connection.CreateCommand();
+        columnsCommand.CommandText = "PRAGMA table_info(playtime_observations);";
+        var hasEstimatedColumn = false;
+        await using (var reader = await columnsCommand.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (string.Equals(reader.GetString(1), "is_estimated", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasEstimatedColumn = true;
+                    break;
+                }
+            }
+        }
+
+        if (!hasEstimatedColumn)
+        {
+            await using var alterCommand = connection.CreateCommand();
+            alterCommand.CommandText = """
+                ALTER TABLE playtime_observations
                 ADD COLUMN is_estimated INTEGER NOT NULL DEFAULT 0
                     CHECK (is_estimated IN (0, 1));
                 """;
@@ -199,30 +265,63 @@ public sealed class SqliteCatalogRepository
                     SELECT po.main_story_minutes
                     FROM playtime_observations po
                     WHERE po.game_id = g.id AND po.source_id = 'howlongtobeat'
-                    ORDER BY po.captured_at DESC
+                        AND po.main_story_minutes IS NOT NULL
+                    ORDER BY po.is_estimated, po.captured_at DESC
                     LIMIT 1
                 ),
                 (
                     SELECT po.story_and_extras_minutes
                     FROM playtime_observations po
                     WHERE po.game_id = g.id AND po.source_id = 'howlongtobeat'
-                    ORDER BY po.captured_at DESC
+                        AND po.story_and_extras_minutes IS NOT NULL
+                    ORDER BY po.is_estimated, po.captured_at DESC
                     LIMIT 1
                 ),
                 (
                     SELECT po.completionist_minutes
                     FROM playtime_observations po
                     WHERE po.game_id = g.id AND po.source_id = 'howlongtobeat'
-                    ORDER BY po.captured_at DESC
+                        AND po.completionist_minutes IS NOT NULL
+                    ORDER BY po.is_estimated, po.captured_at DESC
                     LIMIT 1
                 ),
                 (
                     SELECT po.captured_at
                     FROM playtime_observations po
                     WHERE po.game_id = g.id AND po.source_id = 'howlongtobeat'
-                    ORDER BY po.captured_at DESC
+                        AND (po.main_story_minutes IS NOT NULL OR
+                             po.story_and_extras_minutes IS NOT NULL OR
+                             po.completionist_minutes IS NOT NULL)
+                    ORDER BY po.is_estimated, po.captured_at DESC
                     LIMIT 1
-                )
+                ),
+                g.short_description,
+                g.genres_json,
+                g.developer,
+                COALESCE((
+                    SELECT po.is_estimated
+                    FROM playtime_observations po
+                    WHERE po.game_id = g.id AND po.source_id = 'howlongtobeat'
+                        AND po.main_story_minutes IS NOT NULL
+                    ORDER BY po.is_estimated, po.captured_at DESC
+                    LIMIT 1
+                ), 0),
+                COALESCE((
+                    SELECT po.is_estimated
+                    FROM playtime_observations po
+                    WHERE po.game_id = g.id AND po.source_id = 'howlongtobeat'
+                        AND po.story_and_extras_minutes IS NOT NULL
+                    ORDER BY po.is_estimated, po.captured_at DESC
+                    LIMIT 1
+                ), 0),
+                COALESCE((
+                    SELECT po.is_estimated
+                    FROM playtime_observations po
+                    WHERE po.game_id = g.id AND po.source_id = 'howlongtobeat'
+                        AND po.completionist_minutes IS NOT NULL
+                    ORDER BY po.is_estimated, po.captured_at DESC
+                    LIMIT 1
+                ), 0)
             FROM games g
             ORDER BY g.canonical_title COLLATE NOCASE, g.id;
             """;
@@ -257,10 +356,143 @@ public sealed class SqliteCatalogRepository
                     : DateTimeOffset.Parse(
                         reader.GetString(13),
                         CultureInfo.InvariantCulture,
-                        DateTimeStyles.RoundtripKind)));
+                        DateTimeStyles.RoundtripKind),
+                reader.IsDBNull(14) ? null : reader.GetString(14),
+                reader.IsDBNull(15)
+                    ? Array.Empty<string>()
+                    : JsonSerializer.Deserialize<string[]>(reader.GetString(15)) ?? Array.Empty<string>(),
+                reader.IsDBNull(16) ? null : reader.GetString(16),
+                reader.GetInt32(17) != 0,
+                reader.GetInt32(18) != 0,
+                reader.GetInt32(19) != 0));
         }
 
         return games;
+    }
+
+    public async Task<IReadOnlyList<GameMetadataEnrichmentTarget>> ReadMetadataEnrichmentTargetsAsync(
+        CancellationToken cancellationToken)
+    {
+        var targets = new List<GameMetadataEnrichmentTarget>();
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                g.id,
+                g.canonical_title,
+                g.type,
+                COALESCE(
+                    (
+                        SELECT gs.external_id
+                        FROM game_sources gs
+                        WHERE gs.game_id = g.id AND gs.source_id = 'steam'
+                        LIMIT 1
+                    ),
+                    (
+                        SELECT po.product_url
+                        FROM price_observations po
+                        WHERE po.game_id = g.id
+                            AND po.source_id = 'steam'
+                            AND po.product_url IS NOT NULL
+                        ORDER BY po.captured_at DESC
+                        LIMIT 1
+                    )
+                ),
+                g.metadata_checked_at,
+                g.playtime_checked_at
+            FROM games g
+            ORDER BY g.canonical_title COLLATE NOCASE, g.id;
+            """;
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            targets.Add(new GameMetadataEnrichmentTarget(
+                Guid.Parse(reader.GetString(0)),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4)
+                    ? null
+                    : DateTimeOffset.Parse(
+                        reader.GetString(4),
+                        CultureInfo.InvariantCulture,
+                        DateTimeStyles.RoundtripKind),
+                reader.IsDBNull(5)
+                    ? null
+                    : DateTimeOffset.Parse(
+                        reader.GetString(5),
+                        CultureInfo.InvariantCulture,
+                        DateTimeStyles.RoundtripKind)));
+        }
+
+        return targets;
+    }
+
+    public async Task SaveGameNarrativeMetadataAsync(
+        Guid gameId,
+        string? shortDescription,
+        IReadOnlyList<string> genres,
+        string? developer,
+        string? releaseDate,
+        DateTimeOffset checkedAt,
+        CancellationToken cancellationToken)
+    {
+        var genresJson = genres.Count == 0 ? null : JsonSerializer.Serialize(genres);
+        await _writeLock.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE games
+                SET short_description = COALESCE($description, short_description),
+                    genres_json = COALESCE($genres, genres_json),
+                    developer = COALESCE($developer, developer),
+                    release_date = COALESCE($releaseDate, release_date),
+                    metadata_checked_at = $checkedAt
+                WHERE id = $gameId;
+                """;
+            command.Parameters.AddWithValue("$description", (object?)shortDescription ?? DBNull.Value);
+            command.Parameters.AddWithValue("$genres", (object?)genresJson ?? DBNull.Value);
+            command.Parameters.AddWithValue("$developer", (object?)developer ?? DBNull.Value);
+            command.Parameters.AddWithValue("$releaseDate", (object?)releaseDate ?? DBNull.Value);
+            command.Parameters.AddWithValue("$checkedAt", checkedAt.ToUniversalTime().ToString("O"));
+            command.Parameters.AddWithValue("$gameId", gameId.ToString("D"));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public async Task MarkPlaytimeLookupCheckedAsync(
+        Guid gameId,
+        DateTimeOffset checkedAt,
+        CancellationToken cancellationToken)
+    {
+        await _writeLock.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE games
+                SET playtime_checked_at = $checkedAt
+                WHERE id = $gameId;
+                """;
+            command.Parameters.AddWithValue("$checkedAt", checkedAt.ToUniversalTime().ToString("O"));
+            command.Parameters.AddWithValue("$gameId", gameId.ToString("D"));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
     }
 
     public async Task<IReadOnlyList<PriceHistoryEntry>> ReadPriceHistoryAsync(
@@ -325,7 +557,7 @@ public sealed class SqliteCatalogRepository
                 VALUES ($id, $title, $releaseDate, $msrp, $currency, $type)
                 ON CONFLICT(id) DO UPDATE SET
                     canonical_title = excluded.canonical_title,
-                    release_date = excluded.release_date,
+                    release_date = COALESCE(excluded.release_date, games.release_date),
                     msrp = excluded.msrp,
                     currency = excluded.currency,
                     type = excluded.type;
@@ -549,7 +781,8 @@ public sealed class SqliteCatalogRepository
             int? storyAndExtrasMinutes,
             int? completionistMinutes,
             DateTimeOffset capturedAt,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool isEstimated = false)
         {
             if (mainStoryMinutes is null &&
                 storyAndExtrasMinutes is null &&
@@ -581,14 +814,15 @@ public sealed class SqliteCatalogRepository
                 command.CommandText = """
                     INSERT INTO playtime_observations (
                         game_id, source_id, captured_at, main_story_minutes,
-                        story_and_extras_minutes, completionist_minutes)
+                        story_and_extras_minutes, completionist_minutes, is_estimated)
                     VALUES (
                         $gameId, $sourceId, $capturedAt, $mainStory,
-                        $storyAndExtras, $completionist)
+                        $storyAndExtras, $completionist, $isEstimated)
                     ON CONFLICT(game_id, source_id, captured_at) DO UPDATE SET
                         main_story_minutes = excluded.main_story_minutes,
                         story_and_extras_minutes = excluded.story_and_extras_minutes,
-                        completionist_minutes = excluded.completionist_minutes;
+                        completionist_minutes = excluded.completionist_minutes,
+                        is_estimated = excluded.is_estimated;
                     """;
                 command.Parameters.AddWithValue("$gameId", gameId.ToString("D"));
                 command.Parameters.AddWithValue("$sourceId", sourceId);
@@ -596,6 +830,7 @@ public sealed class SqliteCatalogRepository
                 command.Parameters.AddWithValue("$mainStory", (object?)mainStoryMinutes ?? DBNull.Value);
                 command.Parameters.AddWithValue("$storyAndExtras", (object?)storyAndExtrasMinutes ?? DBNull.Value);
                 command.Parameters.AddWithValue("$completionist", (object?)completionistMinutes ?? DBNull.Value);
+                command.Parameters.AddWithValue("$isEstimated", isEstimated ? 1 : 0);
                 await command.ExecuteNonQueryAsync(cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
             }

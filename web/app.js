@@ -56,6 +56,7 @@
     historyPayload: null,
     refreshing: false,
     cheapSharkStores: null,
+    synopsisRequests: new Map(),
     dialogGameId: null,
     exchangeRate: FALLBACK_CRC_RATE,
     exchangeRateUpdatedAt: 0,
@@ -257,16 +258,14 @@
     return percent > 0 ? percent : null;
   }
 
-  function formatDuration(value, key = "") {
+  function formatDuration(value, isEstimated = false, applies = true) {
     const amount = numberOrNull(value);
-    if (amount === null) return "No disponible";
-    if (key.toLowerCase().includes("minute") || amount >= 100) {
-      const minutes = Math.round(amount);
-      const hours = Math.floor(minutes / 60);
-      const remainder = minutes % 60;
-      return hours ? `${hours} h${remainder ? ` ${remainder} min` : ""}` : `${minutes} min`;
-    }
-    return `${amount} h`;
+    if (amount === null) return applies ? "No disponible" : "No aplica";
+    const hours = Math.round(amount / 6) / 10;
+    const formattedHours = new Intl.NumberFormat("es-CR", {
+      maximumFractionDigits: 1
+    }).format(hours);
+    return `${isEstimated ? "≈ " : ""}${formattedHours} h`;
   }
 
   function formatDate(value, options = {}) {
@@ -331,6 +330,18 @@
       if (!title) continue;
       const id = String(raw.gameId ?? raw.id ?? title.toLowerCase());
       const playtime = raw.hltb ?? raw.howLongToBeat ?? raw.playtime ?? {};
+      const rawGenres = raw.generos ?? raw.genres ?? raw.genero ?? raw.genre;
+      const genres = (typeof rawGenres === "string"
+        ? rawGenres.split(",")
+        : normalizeList(rawGenres))
+        .map(item => typeof item === "string" ? item : item?.description ?? item?.name)
+        .filter(value => typeof value === "string" && value.trim())
+        .map(value => value.trim());
+      const developerValue = raw.desarrollador ?? raw.developer ?? raw.developers;
+      const developer = normalizeList(developerValue)
+        .map(value => typeof value === "string" ? value : value?.name)
+        .filter(value => typeof value === "string" && value.trim())
+        .join(", ");
       let game = groups.get(id);
       if (!game) {
         game = {
@@ -350,11 +361,30 @@
           mainStory: raw.mainStoryMinutes ?? raw.hltbMainStory ?? raw.mainStory ?? playtime.mainStoryMinutes ?? playtime.mainStory ?? null,
           storyExtras: raw.storyAndExtrasMinutes ?? raw.hltbStoryAndExtras ?? raw.storyAndExtras ?? playtime.storyAndExtrasMinutes ?? playtime.storyAndExtras ?? null,
           completionist: raw.completionistMinutes ?? raw.hltbCompletionist ?? raw.completionist ?? playtime.completionistMinutes ?? playtime.completionist ?? null,
+          mainStoryEstimated: Boolean(raw.mainStoryEstimated ?? playtime.mainStoryEstimated),
+          storyExtrasEstimated: Boolean(raw.storyAndExtrasEstimated ?? playtime.storyAndExtrasEstimated),
+          completionistEstimated: Boolean(raw.completionistEstimated ?? playtime.completionistEstimated),
+          shortDescription: String(raw.sinopsis ?? raw.shortDescription ?? raw.synopsis ?? raw.description ?? "").trim(),
+          genres: [],
+          developer: developer.trim(),
+          releaseDate: raw.lanzamiento ?? raw.releaseDate ?? null,
+          steamAppId: raw.steamAppId ?? null,
           historicalLow: Boolean(raw.isHistoricalLow ?? raw.historicalLow ?? raw.isAllTimeLow),
           updatedAt: raw.capturedAt ?? raw.updatedAt ?? raw.timestamp ?? null
         };
         groups.set(id, game);
       }
+
+      game.shortDescription ||= String(
+        raw.sinopsis ?? raw.shortDescription ?? raw.synopsis ?? raw.description ?? ""
+      ).trim();
+      game.genres = [...new Set([...game.genres, ...genres])];
+      game.developer ||= developer.trim();
+      game.releaseDate ||= raw.lanzamiento ?? raw.releaseDate ?? null;
+      game.steamAppId ||= raw.steamAppId ?? null;
+      game.mainStoryEstimated ||= Boolean(raw.mainStoryEstimated ?? playtime.mainStoryEstimated);
+      game.storyExtrasEstimated ||= Boolean(raw.storyAndExtrasEstimated ?? playtime.storyAndExtrasEstimated);
+      game.completionistEstimated ||= Boolean(raw.completionistEstimated ?? playtime.completionistEstimated);
 
       for (const platform of normalizeList(raw.platforms ?? raw.platform)) {
         if (typeof platform === "string") game.platforms.add(platform);
@@ -399,6 +429,9 @@
       for (const offer of offers) {
         if (offer.currentPrice !== null || offer.regularPrice !== null) {
           game.offers.push(offer);
+          if (!game.steamAppId && offer.store === "Steam" && offer.url) {
+            game.steamAppId = offer.url.match(/\/app\/(\d+)(?:\/|$)/)?.[1] ?? null;
+          }
           if (offer.currentPrice !== null && offer.capturedAt) {
             game.history.push({
               store: offer.store,
@@ -861,6 +894,54 @@
     }
   }
 
+  function renderMetadataChips(game) {
+    const pending = "Datos pendientes";
+    const year = String(game.releaseDate ?? "").match(/\b(?:19|20)\d{2}\b/)?.[0] ?? pending;
+    const genreChips = game.genres.length
+      ? game.genres.slice(0, 5).map(genre =>
+        `<span class="detail-chip"><strong>Género</strong> ${escapeHtml(genre)}</span>`).join("")
+      : `<span class="detail-chip"><strong>Género</strong> ${pending}</span>`;
+    return `${genreChips}
+      <span class="detail-chip"><strong>Desarrollador</strong> ${escapeHtml(game.developer || pending)}</span>
+      <span class="detail-chip"><strong>Lanzamiento</strong> ${year}</span>`;
+  }
+
+  async function loadGameSynopsis(game) {
+    const descriptionElement = document.querySelector("#game-synopsis");
+    if (!descriptionElement || game.shortDescription) return;
+    descriptionElement.textContent = "Buscando una sinopsis en Wikipedia…";
+
+    if (!state.synopsisRequests.has(game.id)) {
+      state.synopsisRequests.set(game.id, (async () => {
+        try {
+          const wikiUrl = `https://es.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(game.title.replace(/\s+/g, "_"))}`;
+          const response = await fetch(wikiUrl, { cache: "no-store" });
+          if (!response.ok) throw new Error(`Wikipedia respondió HTTP ${response.status}.`);
+          const payload = await response.json();
+          const description = String(payload?.extract ?? "").trim();
+          return description && titleSimilarity(game.title, payload?.title ?? game.title) >= 0.6
+            ? description
+            : null;
+        } catch (error) {
+          console.warn(`No se pudo consultar la sinopsis de Wikipedia para ${game.title}.`, error);
+          return null;
+        }
+      })());
+    }
+
+    const description = await state.synopsisRequests.get(game.id);
+    if (state.dialogGameId !== game.id || !elements.dialog.open) return;
+    const currentDescription = document.querySelector("#game-synopsis");
+    if (!currentDescription) return;
+    if (description) {
+      game.shortDescription = description;
+      currentDescription.textContent = description;
+    } else {
+      currentDescription.textContent =
+        "No se encontró una sinopsis disponible en Wikipedia.";
+    }
+  }
+
   function openGameDetails(gameId, refreshLive = true) {
     const game = state.games.find(item => item.id === gameId);
     if (!game) return;
@@ -880,9 +961,9 @@
       ["OpenCritic", game.openCritic]
     ].filter(([, value]) => value !== null);
     const hltb = [
-      ["Historia principal", game.mainStory, "mainStoryMinutes"],
-      ["Historia + extras", game.storyExtras, "storyAndExtrasMinutes"],
-      ["Completista", game.completionist, "completionistMinutes"]
+      ["Historia principal", game.mainStory, game.mainStoryEstimated],
+      ["Historia + extras", game.storyExtras, game.storyExtrasEstimated],
+      ["Completista", game.completionist, game.completionistEstimated]
     ];
     const detailPriceRows = prices.length
       ? prices.map(offer => renderDetailPriceRow(offer, game)).join("")
@@ -891,8 +972,8 @@
     const scores = ratings.length
       ? ratings.map(([name, value]) => `<div class="detail-stat"><span>${escapeHtml(name)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")
       : `<div class="detail-empty">No hay calificaciones publicadas.</div>`;
-    const times = hltb.map(([name, value, key]) =>
-      `<div class="detail-stat"><span>${escapeHtml(name)}</span><strong>${formatDuration(value, key)}</strong></div>`).join("");
+    const times = hltb.map(([name, value, isEstimated]) =>
+      `<div class="detail-stat${isEstimated ? " detail-stat-estimated" : ""}"><span>${escapeHtml(name)}</span><strong>${formatDuration(value, isEstimated, game.type !== "dlc")}</strong></div>`).join("");
     const platforms = game.platforms.length
       ? game.platforms.map(platform => `<span class="platform-tag">${escapeHtml(platform)}</span>`).join("")
       : `<span class="platform-tag">No indicadas</span>`;
@@ -916,8 +997,13 @@
         <p id="live-deals" class="live-deal-status"></p>
       </section>
       <section class="detail-section">
-        <h3>How Long To Beat</h3>
-        <div class="detail-stats">${times}</div>
+        <h3>Acerca del juego / Historia</h3>
+        <p id="game-synopsis" class="game-synopsis">${escapeHtml(game.shortDescription || "Buscando una sinopsis en Wikipedia…")}</p>
+        <div class="detail-chips">${renderMetadataChips(game)}</div>
+        <div class="detail-stats hltb-stats">${times}</div>
+        ${game.mainStoryEstimated || game.storyExtrasEstimated || game.completionistEstimated
+          ? `<p class="detail-section-note">Los tiempos marcados como aproximados son estimaciones heurísticas; los demás provienen de How Long To Beat.</p>`
+          : ""}
       </section>
       <section class="detail-section">
         <h3>Historial de precios por tienda</h3>
@@ -928,6 +1014,7 @@
     renderLiveDeals(game);
     if (!elements.dialog.open) elements.dialog.showModal();
     renderDetailChart(game);
+    if (!game.shortDescription) loadGameSynopsis(game);
     if (refreshLive) loadLiveDeals(game);
   }
 

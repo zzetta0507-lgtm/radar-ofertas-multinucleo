@@ -108,7 +108,26 @@ public sealed record CatalogGameMetadata(
     int? MainStoryMinutes = null,
     int? StoryAndExtrasMinutes = null,
     int? CompletionistMinutes = null,
-    DateTimeOffset? PlaytimeCapturedAt = null);
+    DateTimeOffset? PlaytimeCapturedAt = null,
+    string? ShortDescription = null,
+    IReadOnlyList<string>? Genres = null,
+    string? Developer = null,
+    bool MainStoryEstimated = false,
+    bool StoryAndExtrasEstimated = false,
+    bool CompletionistEstimated = false);
+
+public sealed record GameMetadataEnrichmentTarget(
+    Guid GameId,
+    string CanonicalTitle,
+    string Type,
+    string? SteamAppId,
+    DateTimeOffset? MetadataCheckedAt,
+    DateTimeOffset? PlaytimeCheckedAt);
+
+public sealed record EstimatedPlaytime(
+    int MainStoryMinutes,
+    int StoryAndExtrasMinutes,
+    int CompletionistMinutes);
 
 public sealed record PriceHistoryEntry(
     long ObservationId,

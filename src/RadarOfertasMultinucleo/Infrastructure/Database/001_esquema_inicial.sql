@@ -8,7 +8,12 @@ CREATE TABLE IF NOT EXISTS games (
     release_date TEXT,
     msrp NUMERIC CHECK (msrp IS NULL OR msrp >= 0),
     currency TEXT CHECK (currency IS NULL OR length(currency) = 3),
-    type TEXT NOT NULL CHECK (type IN ('juego', 'juego + DLC', 'DLC', 'otro'))
+    type TEXT NOT NULL CHECK (type IN ('juego', 'juego + DLC', 'DLC', 'otro')),
+    short_description TEXT,
+    genres_json TEXT,
+    developer TEXT,
+    metadata_checked_at TEXT,
+    playtime_checked_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS platforms (
@@ -94,6 +99,7 @@ CREATE TABLE IF NOT EXISTS playtime_observations (
     completionist_minutes INTEGER CHECK (
         completionist_minutes IS NULL OR completionist_minutes >= 0
     ),
+    is_estimated INTEGER NOT NULL DEFAULT 0 CHECK (is_estimated IN (0, 1)),
     UNIQUE (game_id, source_id, captured_at)
 );
 

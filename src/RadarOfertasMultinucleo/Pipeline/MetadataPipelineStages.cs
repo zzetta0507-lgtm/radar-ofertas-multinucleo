@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using RadarOfertasMultinucleo.Configuration;
@@ -1383,12 +1384,16 @@ public sealed class JsonPublishStage : IPublishStage
     private readonly string _catalogPath;
     private readonly string _historyPath;
     private readonly SqliteCatalogRepository _repository;
+    private readonly CatalogSeedCatalog _seedCatalog;
     private readonly List<PersistedOffer> _offers = new();
     private readonly SemaphoreSlim _sync = new(1, 1);
 
-    public JsonPublishStage(SqliteCatalogRepository repository)
+    public JsonPublishStage(
+        SqliteCatalogRepository repository,
+        CatalogSeedCatalog seedCatalog)
     {
         _repository = repository;
+        _seedCatalog = seedCatalog;
         _catalogPath = Path.GetFullPath(Path.Combine("web", "data", "catalog.json"));
         _historyPath = Path.GetFullPath(Path.Combine("web", "data", "history.json"));
     }
@@ -1432,7 +1437,19 @@ public sealed class JsonPublishStage : IPublishStage
                     StoryAndExtrasMinutes =
                         game.StoryAndExtrasMinutes ?? previous.StoryAndExtrasMinutes,
                     CompletionistMinutes = game.CompletionistMinutes ?? previous.CompletionistMinutes,
-                    PlaytimeCapturedAt = game.PlaytimeCapturedAt ?? previous.CapturedAt
+                    PlaytimeCapturedAt = game.PlaytimeCapturedAt ?? previous.CapturedAt,
+                    ShortDescription = game.ShortDescription ?? previous.ShortDescription,
+                    Genres = game.Genres is { Count: > 0 } ? game.Genres : previous.Genres,
+                    Developer = game.Developer ?? previous.Developer,
+                    MainStoryEstimated = game.MainStoryMinutes is null
+                        ? previous.MainStoryEstimated
+                        : game.MainStoryEstimated,
+                    StoryAndExtrasEstimated = game.StoryAndExtrasMinutes is null
+                        ? previous.StoryAndExtrasEstimated
+                        : game.StoryAndExtrasEstimated,
+                    CompletionistEstimated = game.CompletionistMinutes is null
+                        ? previous.CompletionistEstimated
+                        : game.CompletionistEstimated
                 }
                 : game)
             .Concat(previousCatalog
@@ -1451,7 +1468,40 @@ public sealed class JsonPublishStage : IPublishStage
                     game.MainStoryMinutes,
                     game.StoryAndExtrasMinutes,
                     game.CompletionistMinutes,
-                    game.CapturedAt)))
+                    game.CapturedAt,
+                    game.ShortDescription,
+                    game.Genres,
+                    game.Developer,
+                    game.MainStoryEstimated,
+                    game.StoryAndExtrasEstimated,
+                    game.CompletionistEstimated)))
+            .ToArray();
+        metadata = metadata
+            .Select(game =>
+            {
+                var estimate = _seedCatalog.EstimatePlaytime(
+                    game.CanonicalTitle,
+                    game.Type,
+                    game.Genres ?? Array.Empty<string>());
+                if (estimate is null)
+                {
+                    return game;
+                }
+
+                return game with
+                {
+                    MainStoryMinutes = game.MainStoryMinutes ?? estimate.MainStoryMinutes,
+                    StoryAndExtrasMinutes =
+                        game.StoryAndExtrasMinutes ?? estimate.StoryAndExtrasMinutes,
+                    CompletionistMinutes =
+                        game.CompletionistMinutes ?? estimate.CompletionistMinutes,
+                    MainStoryEstimated = game.MainStoryMinutes is null || game.MainStoryEstimated,
+                    StoryAndExtrasEstimated =
+                        game.StoryAndExtrasMinutes is null || game.StoryAndExtrasEstimated,
+                    CompletionistEstimated =
+                        game.CompletionistMinutes is null || game.CompletionistEstimated
+                };
+            })
             .ToArray();
 
         var priceHistory = (await _repository.ReadPriceHistoryAsync(cancellationToken)).ToList();
@@ -1601,16 +1651,39 @@ public sealed class JsonPublishStage : IPublishStage
                         .FirstOrDefault(value => value is not null),
                     entries.Select(entry => entry.MetacriticScore)
                         .FirstOrDefault(value => value is not null),
-                    entries.Select(entry => entry.MainStoryMinutes)
+                    entries.OrderBy(entry => entry.MainStoryEstimated)
+                        .Select(entry => entry.MainStoryMinutes)
                         .FirstOrDefault(value => value is not null),
-                    entries.Select(entry => entry.StoryAndExtrasMinutes)
+                    entries.OrderBy(entry => entry.StoryAndExtrasEstimated)
+                        .Select(entry => entry.StoryAndExtrasMinutes)
                         .FirstOrDefault(value => value is not null),
-                    entries.Select(entry => entry.CompletionistMinutes)
+                    entries.OrderBy(entry => entry.CompletionistEstimated)
+                        .Select(entry => entry.CompletionistMinutes)
                         .FirstOrDefault(value => value is not null),
                     capturedAt,
                     offers.Any(offer => offer.IsHistoricalLow),
                     offers,
-                    gameHistory);
+                    gameHistory,
+                    entries.Select(entry => entry.ShortDescription)
+                        .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)),
+                    entries.SelectMany(entry => entry.Genres ?? Array.Empty<string>())
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(genre => genre, StringComparer.OrdinalIgnoreCase)
+                        .ToArray(),
+                    entries.Select(entry => entry.Developer)
+                        .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)),
+                    entries.OrderBy(entry => entry.MainStoryEstimated)
+                        .Where(entry => entry.MainStoryMinutes is not null)
+                        .Select(entry => entry.MainStoryEstimated)
+                        .FirstOrDefault(true),
+                    entries.OrderBy(entry => entry.StoryAndExtrasEstimated)
+                        .Where(entry => entry.StoryAndExtrasMinutes is not null)
+                        .Select(entry => entry.StoryAndExtrasEstimated)
+                        .FirstOrDefault(true),
+                    entries.OrderBy(entry => entry.CompletionistEstimated)
+                        .Where(entry => entry.CompletionistMinutes is not null)
+                        .Select(entry => entry.CompletionistEstimated)
+                        .FirstOrDefault(true));
             }).ToArray();
 
         await WriteJsonAsync(_historyPath, priceHistory, cancellationToken);
@@ -1715,7 +1788,26 @@ public sealed class JsonPublishStage : IPublishStage
         DateTimeOffset CapturedAt,
         bool IsHistoricalLow,
         IReadOnlyList<PersistedOffer> Offers,
-        IReadOnlyList<PriceHistoryEntry> History);
+        IReadOnlyList<PriceHistoryEntry> History,
+        string? ShortDescription = null,
+        IReadOnlyList<string>? Genres = null,
+        string? Developer = null,
+        bool MainStoryEstimated = false,
+        bool StoryAndExtrasEstimated = false,
+        bool CompletionistEstimated = false)
+    {
+        [JsonPropertyName("sinopsis")]
+        public string? Sinopsis => ShortDescription;
+
+        [JsonPropertyName("generos")]
+        public string Generos => string.Join(", ", Genres ?? Array.Empty<string>());
+
+        [JsonPropertyName("desarrollador")]
+        public string? Desarrollador => Developer;
+
+        [JsonPropertyName("lanzamiento")]
+        public string? Lanzamiento => ReleaseDate;
+    }
 }
 
 public static class ChannelStageWorkers
