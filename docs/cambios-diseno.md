@@ -28,6 +28,7 @@ Este documento registra cambios de diseño y distingue decisiones implementadas 
 - Las observaciones se insertan en SQLite sin sobrescribir historial y se exportan con enlaces por tienda a `web/data/catalog.json` y `web/data/history.json`. Si una fuente falla o no aporta un precio nuevo, se conserva su observación anterior y se marca `isStale`/`staleSince`; una falla parcial no elimina otros datos.
 - GitHub Actions ejecuta la actualización cada 15 minutos, rebasea antes de publicar y despliega la web. La página recarga catálogo y métricas cada 30 segundos sin navegar de nuevo; el detalle intenta consultar ofertas recientes de CheapShark y conserva Eneba y otras observaciones publicadas como respaldo.
 - La interfaz convierte USD a CRC con la tasa actual de Open ER-API (510 CRC/USD como respaldo), muestra ambas monedas y permite alternar a USD también en el gráfico. Solo presenta tachado y porcentaje cuando hay rebaja real; los datos se etiquetan como actuales hasta cumplir 24 horas, salvo fallo de la consulta en vivo.
+- `--seed-history` completa de forma idempotente los días faltantes desde el 9 de noviembre de 2026 hasta hoy en Costa Rica. Los días derivados se guardan en SQLite y en `catalog.json`/`history.json` con `isEstimated`; los snapshots reales del día no se modifican. El gráfico conserva los ocho días, distingue los puntos estimados y muestra la fecha completa en el tooltip.
 
 ## Funcionalidad todavía pendiente
 

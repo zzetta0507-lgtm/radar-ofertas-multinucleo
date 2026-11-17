@@ -43,6 +43,7 @@ Desde la raíz del repositorio:
 
 ```powershell
 dotnet run --project src/RadarOfertasMultinucleo
+dotnet run --project src/RadarOfertasMultinucleo -- --seed-history
 dotnet run --project src/RadarOfertasMultinucleo -- --mode concurrent
 dotnet run --project src/RadarOfertasMultinucleo -- --mode parallel --record-replay
 dotnet run --project src/RadarOfertasMultinucleo -- --mode parallel --source replay
@@ -50,6 +51,11 @@ dotnet run --project src/RadarOfertasMultinucleo -- --benchmark-contention
 dotnet run --project src/RadarOfertasMultinucleo -- --validate-matching
 dotnet run --project src/RadarOfertasMultinucleo -- --source replay --run-benchmarks
 ```
+
+`--seed-history` completa de forma idempotente el historial diario desde el
+2026-11-09 hasta la fecha local de Costa Rica. Las observaciones existentes se
+conservan; los días derivados se marcan `isEstimated` y no sustituyen precios
+reales.
 
 `--record-replay` guarda respuestas HTTP en `data/replay/`. El modo replay no
 usa la red y requiere que todas las respuestas estén grabadas. Sus retardos se
