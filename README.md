@@ -50,12 +50,26 @@ dotnet run --project src/RadarOfertasMultinucleo -- --mode parallel --source rep
 dotnet run --project src/RadarOfertasMultinucleo -- --benchmark-contention
 dotnet run --project src/RadarOfertasMultinucleo -- --validate-matching
 dotnet run --project src/RadarOfertasMultinucleo -- --source replay --run-benchmarks
+dotnet run --project src/RadarOfertasMultinucleo -- --source replay --enrich-catalog
+dotnet run --project src/RadarOfertasMultinucleo -- --enrich-catalog --narrative-only
 ```
 
 `--seed-history` completa de forma idempotente el historial diario desde el
 2026-11-09 hasta la fecha local de Costa Rica. Las observaciones existentes se
 conservan; los días derivados se marcan `isEstimated` y no sustituyen precios
 reales.
+
+El pipeline completa duraciones faltantes con estimaciones por género/tipo y
+consulta How Long To Beat y metadatos narrativos en Steam (español), con respaldo
+de GOG y del catálogo semilla, usando cadencia y caché SQLite por dominio. Los
+intentos se espacian 30 días; una ejecución normal procesa hasta 60 juegos
+elegibles. `--enrich-catalog` recorre todo el catálogo y vuelve a publicar
+`catalog.json`; `--narrative-only` limita ese comando a Steam/GOG/semillas sin
+volver a consultar HLTB. Con `--source replay` no consulta la red y solo genera
+estimaciones locales. El JSON exporta tanto los nombres ingleses como los
+campos `sinopsis`, `generos`, `desarrollador` y `lanzamiento`. El modal usa
+Wikipedia como único respaldo de sinopsis en vivo; Steam se consulta solo desde
+el pipeline C#.
 
 `--record-replay` guarda respuestas HTTP en `data/replay/`. El modo replay no
 usa la red y requiere que todas las respuestas estén grabadas. Sus retardos se
