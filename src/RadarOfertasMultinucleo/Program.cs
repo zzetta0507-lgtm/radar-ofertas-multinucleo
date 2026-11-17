@@ -34,6 +34,25 @@ internal static class App
                 return 0;
             }
 
+            if (command.SeedHistory)
+            {
+                var seedCatalog = await CatalogSeedCatalog.LoadAsync(
+                    options.CatalogSeedFile,
+                    CancellationToken.None);
+                var repository = new SqliteCatalogRepository(options, seedCatalog);
+                await repository.InitializeAsync(CancellationToken.None);
+                var result = await new PriceHistorySeedService(repository)
+                    .SeedThroughTodayAsync(CancellationToken.None);
+                await new JsonPublishStage(repository).CompleteAsync(CancellationToken.None);
+                Console.WriteLine(
+                    $"Historial hasta {result.ThroughDate:yyyy-MM-dd}: " +
+                    $"{result.GameStorePairs} pares juego-tienda, " +
+                    $"{result.EstimatedObservations} puntos estimados añadidos, " +
+                    $"{result.ImportedObservations} observaciones existentes importadas y " +
+                    $"{result.PairsWithRealCurrentPrice} precios reales del día.");
+                return 0;
+            }
+
             var validation = TitleMatchingStage.Validate(
                 MatchingValidationSet.Pairs,
                 options.MatchingThreshold);
@@ -152,6 +171,7 @@ internal static class App
         var benchmarkContention = false;
         var runBenchmarks = false;
         var validateMatching = false;
+        var seedHistory = false;
         for (var index = 0; index < args.Length; index++)
         {
             switch (args[index])
@@ -190,6 +210,9 @@ internal static class App
                 case "--validate-matching":
                     validateMatching = true;
                     break;
+                case "--seed-history":
+                    seedHistory = true;
+                    break;
                 default:
                     throw new ArgumentException($"Argumento desconocido: {args[index]}.");
             }
@@ -218,12 +241,20 @@ internal static class App
             throw new ArgumentException("--validate-matching no se combina con otros modos de ejecución.");
         }
 
+        if (seedHistory &&
+            (recordReplay || sourceMode == HttpSourceMode.Replay || benchmarkContention ||
+             runBenchmarks || validateMatching))
+        {
+            throw new ArgumentException("--seed-history no se combina con otros modos de ejecución.");
+        }
+
         return new RunCommand(
             sourceMode,
             recordReplay,
             benchmarkContention,
             runBenchmarks,
-            validateMatching);
+            validateMatching,
+            seedHistory);
     }
 
     private sealed record RunCommand(
@@ -231,5 +262,6 @@ internal static class App
         bool RecordReplay,
         bool BenchmarkContention,
         bool RunBenchmarks,
-        bool ValidateMatching);
+        bool ValidateMatching,
+        bool SeedHistory);
 }

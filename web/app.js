@@ -376,7 +376,8 @@
             store: normalizeStore(point.store ?? point.storeName ?? point.sourceId),
             price,
             currency: point.currency || game.currency,
-            capturedAt
+            capturedAt,
+            isEstimated: Boolean(point.isEstimated)
           });
         }
       });
@@ -444,7 +445,8 @@
         store,
         price,
         currency: row.currency || game.currency,
-        capturedAt
+        capturedAt,
+        isEstimated: Boolean(row.isEstimated)
       });
     }
     for (const game of state.games) {
@@ -862,8 +864,8 @@
   function openGameDetails(gameId, refreshLive = true) {
     const game = state.games.find(item => item.id === gameId);
     if (!game) return;
-    state.dialogChart?.destroy();
-    state.dialogChart = null;
+    state.detailChart?.destroy();
+    state.detailChart = null;
     state.dialogGameId = game.id;
     const cover = safeHttpUrl(game.cover);
     const offersByStore = new Map(game.offers
@@ -1050,6 +1052,40 @@
       .toLocaleLowerCase("en").replace(/[^a-z0-9]+/g, " ").trim();
   }
 
+  function historyDateKey(capturedAt) {
+    const date = new Date(capturedAt);
+    if (Number.isNaN(date.getTime())) return null;
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Costa_Rica",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(date);
+    const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}`;
+  }
+
+  function historyDateLabel(dateKey, includeWeekday = false) {
+    const date = new Date(`${dateKey}T12:00:00Z`);
+    const options = { timeZone: "UTC", day: "numeric", month: "short" };
+    if (includeWeekday) options.weekday = "short";
+    const parts = new Intl.DateTimeFormat("es-CR", options)
+      .formatToParts(date)
+      .reduce((values, part) => {
+        values[part.type] = part.value.replace(/\.$/, "");
+        return values;
+      }, {});
+    const day = `${parts.day} ${parts.month}`;
+    if (!includeWeekday) return day;
+    const weekday = parts.weekday.charAt(0).toUpperCase() + parts.weekday.slice(1);
+    return `${weekday} ${day} ${dateKey.slice(0, 4)}`;
+  }
+
+  function nextHistoryDate(dateKey) {
+    const [year, month, day] = dateKey.split("-").map(Number);
+    return new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10);
+  }
+
   function renderDetailChart(game) {
     const history = game.history || [];
     const canvas = document.querySelector("#detail-price-chart");
@@ -1064,34 +1100,48 @@
     }
 
     const grouped = new Map();
+    const availableDates = [];
     history.forEach(point => {
-      if (!point.capturedAt) return;
-      if (!grouped.has(point.store)) grouped.set(point.store, []);
-      grouped.get(point.store).push(point);
+      const dateKey = historyDateKey(point.capturedAt);
+      if (!dateKey || dateKey < "2026-11-09") return;
+      if (!grouped.has(point.store)) grouped.set(point.store, new Map());
+      const storeHistory = grouped.get(point.store);
+      const previous = storeHistory.get(dateKey);
+      const pointIsPreferred = !previous ||
+        (previous.isEstimated && !point.isEstimated) ||
+        (previous.isEstimated === point.isEstimated && point.isLive && !previous.isLive) ||
+        (previous.isEstimated === point.isEstimated &&
+          previous.isLive === point.isLive &&
+          new Date(point.capturedAt) > new Date(previous.capturedAt));
+      if (pointIsPreferred) storeHistory.set(dateKey, point);
+      if (!availableDates.includes(dateKey)) availableDates.push(dateKey);
     });
-    const dateKeys = [...new Set(history
-      .filter(point => point.capturedAt && !Number.isNaN(new Date(point.capturedAt).getTime()))
-      .map(point => new Date(point.capturedAt).toISOString()))]
-      .sort();
+    if (!availableDates.length) {
+      canvas.hidden = true;
+      empty.hidden = false;
+      return;
+    }
+    const sortedAvailableDates = availableDates.sort();
+    const latestDate = sortedAvailableDates[sortedAvailableDates.length - 1];
+    const dateKeys = [];
+    for (let dateKey = "2026-11-09"; dateKey <= latestDate; dateKey = nextHistoryDate(dateKey)) {
+      dateKeys.push(dateKey);
+    }
     const dateIndex = new Map(dateKeys.map((date, index) => [date, index]));
-    const labels = dateKeys.map(date => {
-      const hasLivePoint = history.some(point => point.isLive &&
-        new Date(point.capturedAt).toISOString() === date);
-      return formatDate(date, hasLivePoint
-        ? { dateStyle: "short", timeStyle: "short" }
-        : { dateStyle: "short" });
-    });
     const palette = ["#c8f169", "#76cde0", "#ff9a66", "#c39af7", "#ff777f", "#f4d36a"];
-    const datasets = [...grouped.entries()].map(([store, points], index) => {
+    const datasets = [...grouped.entries()].map(([store, pointsByDate], index) => {
       const values = Array(dateKeys.length).fill(null);
       const originalValues = Array(dateKeys.length).fill(null);
-      points.forEach(point => {
-        const key = new Date(point.capturedAt).toISOString();
-        const position = dateIndex.get(key);
-        if (position !== undefined) {
-          values[position] = convertedAmount(point.price, point.currency);
-          originalValues[position] = { price: point.price, currency: point.currency, isLive: point.isLive };
-        }
+      pointsByDate.forEach((point, dateKey) => {
+        const position = dateIndex.get(dateKey);
+        if (position === undefined) return;
+        values[position] = convertedAmount(point.price, point.currency);
+        originalValues[position] = {
+          price: point.price,
+          currency: point.currency,
+          isLive: point.isLive,
+          isEstimated: point.isEstimated
+        };
       });
       return {
         label: store,
@@ -1099,11 +1149,13 @@
         originalValues,
         borderColor: palette[index % palette.length],
         backgroundColor: palette[index % palette.length],
-        pointRadius: originalValues.map(point => point?.isLive ? 5 : 2),
+        pointRadius: originalValues.map(point => point?.isLive ? 5 : point ? 2 : 0),
         pointBackgroundColor: originalValues.map(point =>
           point?.isLive ? "#c8f169" : palette[index % palette.length]),
+        pointStyle: originalValues.map(point => point?.isEstimated ? "triangle" : "circle"),
         borderWidth: 2,
-        tension: .25
+        tension: .25,
+        spanGaps: true
       };
     });
     if (!datasets.length) {
@@ -1114,22 +1166,34 @@
     empty.hidden = true;
     state.detailChart = new Chart(canvas.getContext("2d"), {
       type: "line",
-      data: { labels, datasets },
+      data: { labels: dateKeys.map(date => historyDateLabel(date)), datasets },
       options: {
         responsive: true,
         maintainAspectRatio: false,
         interaction: { intersect: false, mode: "nearest" },
         plugins: {
           legend: { labels: { color: "#b6bac4", boxWidth: 9, usePointStyle: true, font: { size: 10 } } },
-          tooltip: { callbacks: { label: item => {
-            const original = item.dataset.originalValues?.[item.dataIndex];
-            return `${item.dataset.label}: ${original
-              ? formatMoneyWithReference(original.price, original.currency)
-              : formatMoney(item.parsed.y, state.displayCurrency)}`;
-          } } }
+          tooltip: { callbacks: {
+            title: items => items.length
+              ? historyDateLabel(dateKeys[items[0].dataIndex], true)
+              : "",
+            label: item => {
+              const original = item.dataset.originalValues?.[item.dataIndex];
+              const estimateLabel = original?.isEstimated ? " (estimado)" : "";
+              return `${item.dataset.label}${estimateLabel}: ${original
+                ? formatMoneyWithReference(original.price, original.currency)
+                : formatMoney(item.parsed.y, state.displayCurrency)}`;
+            }
+          } }
         },
         scales: {
-          x: { grid: { color: "rgba(255,255,255,.06)" }, ticks: { color: "#858a97", maxTicksLimit: 6 } },
+          x: { grid: { color: "rgba(255,255,255,.06)" }, ticks: {
+            color: "#858a97",
+            autoSkip: false,
+            maxRotation: 45,
+            minRotation: 45,
+            font: { size: 8 }
+          } },
           y: { grid: { color: "rgba(255,255,255,.07)" }, ticks: { color: "#858a97", callback: value => formatMoney(value, state.displayCurrency) } }
         }
       }

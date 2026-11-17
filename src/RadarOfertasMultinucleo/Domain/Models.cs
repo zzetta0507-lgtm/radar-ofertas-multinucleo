@@ -121,7 +121,8 @@ public sealed record PriceHistoryEntry(
     string? ProductUrl,
     decimal? RegularPrice,
     bool IsDeal,
-    decimal? DiscountPercent);
+    decimal? DiscountPercent,
+    bool IsEstimated = false);
 
 public sealed record TitleMatchCandidate(
     Guid GameId,

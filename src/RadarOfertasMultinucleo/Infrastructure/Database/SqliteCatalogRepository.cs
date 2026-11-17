@@ -48,6 +48,8 @@ public sealed class SqliteCatalogRepository
                 await command.ExecuteNonQueryAsync(cancellationToken);
             }
 
+            await EnsureEstimatedHistoryColumnAsync(connection, cancellationToken);
+
             await using var sourceCommand = connection.CreateCommand();
             sourceCommand.CommandText = """
                 INSERT INTO sources (id, name, source_type, base_url)
@@ -71,6 +73,37 @@ public sealed class SqliteCatalogRepository
         finally
         {
             _writeLock.Release();
+        }
+    }
+
+    private static async Task EnsureEstimatedHistoryColumnAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var columnsCommand = connection.CreateCommand();
+        columnsCommand.CommandText = "PRAGMA table_info(price_observations);";
+        var hasEstimatedColumn = false;
+        await using (var reader = await columnsCommand.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (string.Equals(reader.GetString(1), "is_estimated", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasEstimatedColumn = true;
+                    break;
+                }
+            }
+        }
+
+        if (!hasEstimatedColumn)
+        {
+            await using var alterCommand = connection.CreateCommand();
+            alterCommand.CommandText = """
+                ALTER TABLE price_observations
+                ADD COLUMN is_estimated INTEGER NOT NULL DEFAULT 0
+                    CHECK (is_estimated IN (0, 1));
+                """;
+            await alterCommand.ExecuteNonQueryAsync(cancellationToken);
         }
     }
 
@@ -239,7 +272,7 @@ public sealed class SqliteCatalogRepository
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT id, game_id, source_id, current_price, currency, format, captured_at,
-                   product_url, regular_price, is_deal, discount_percent
+                   product_url, regular_price, is_deal, discount_percent, is_estimated
             FROM price_observations
             WHERE current_price IS NOT NULL
             ORDER BY captured_at, id;
@@ -266,7 +299,8 @@ public sealed class SqliteCatalogRepository
                 reader.GetInt32(9) != 0,
                 reader.IsDBNull(10)
                     ? null
-                    : Convert.ToDecimal(reader.GetValue(10), CultureInfo.InvariantCulture)));
+                    : Convert.ToDecimal(reader.GetValue(10), CultureInfo.InvariantCulture),
+                reader.GetInt32(11) != 0));
         }
 
         return history;
@@ -448,7 +482,8 @@ public sealed class SqliteCatalogRepository
             bool isDeal,
             decimal? discountPercent,
             DateTimeOffset capturedAt,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool isEstimated = false)
         {
             if (currentPrice is null)
             {
@@ -478,10 +513,10 @@ public sealed class SqliteCatalogRepository
                 command.CommandText = """
                     INSERT INTO price_observations (
                         game_id, source_id, captured_at, product_url, current_price,
-                        regular_price, currency, format, is_deal, discount_percent)
+                        regular_price, currency, format, is_deal, discount_percent, is_estimated)
                     VALUES (
                         $gameId, $sourceId, $capturedAt, $productUrl, $currentPrice,
-                        $regularPrice, $currency, $format, $isDeal, $discountPercent)
+                        $regularPrice, $currency, $format, $isDeal, $discountPercent, $isEstimated)
                     RETURNING id;
                     """;
                 command.Parameters.AddWithValue("$gameId", gameId.ToString("D"));
@@ -494,6 +529,7 @@ public sealed class SqliteCatalogRepository
                 command.Parameters.AddWithValue("$format", ToDatabaseFormat(format));
                 command.Parameters.AddWithValue("$isDeal", isDeal ? 1 : 0);
                 command.Parameters.AddWithValue("$discountPercent", (object?)discountPercent ?? DBNull.Value);
+                command.Parameters.AddWithValue("$isEstimated", isEstimated ? 1 : 0);
                 var observationId = (long)(await command.ExecuteScalarAsync(cancellationToken)
                     ?? throw new InvalidOperationException("No se obtuvo el identificador de precio."));
                 await transaction.CommitAsync(cancellationToken);

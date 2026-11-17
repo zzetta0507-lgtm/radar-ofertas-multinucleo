@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS price_observations (
     is_deal INTEGER NOT NULL CHECK (is_deal IN (0, 1)),
     discount_percent NUMERIC CHECK (
         discount_percent IS NULL OR (discount_percent >= 0 AND discount_percent <= 100)
-    )
+    ),
+    is_estimated INTEGER NOT NULL DEFAULT 0 CHECK (is_estimated IN (0, 1))
 );
 
 CREATE INDEX IF NOT EXISTS ix_price_observations_game_source_time

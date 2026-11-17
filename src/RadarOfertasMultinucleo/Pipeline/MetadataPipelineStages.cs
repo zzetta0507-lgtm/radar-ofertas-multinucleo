@@ -1458,6 +1458,15 @@ public sealed class JsonPublishStage : IPublishStage
         var historyKeys = priceHistory
             .Select(HistoryKey)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var oldObservation in await ReadPreviousHistoryAsync(cancellationToken))
+        {
+            if (oldObservation.CurrentPrice is not null &&
+                historyKeys.Add(HistoryKey(oldObservation)))
+            {
+                priceHistory.Add(oldObservation);
+            }
+        }
+
         foreach (var oldOffer in previousCatalog.SelectMany(game => game.Offers))
         {
             if (oldOffer.CurrentPrice is null)
@@ -1498,14 +1507,14 @@ public sealed class JsonPublishStage : IPublishStage
             };
         }).ToList();
         var historicalMinimums = priceHistory
-            .Where(entry => entry.CurrentPrice is not null)
+            .Where(entry => entry.CurrentPrice is not null && !entry.IsEstimated)
             .GroupBy(entry => $"{entry.GameId}|{entry.SourceId}", StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
                 group => group.Key,
                 group => group.Min(entry => entry.CurrentPrice!.Value),
                 StringComparer.OrdinalIgnoreCase);
         var offersByGame = priceHistory
-            .Where(entry => entry.CurrentPrice is not null)
+            .Where(entry => entry.CurrentPrice is not null && !entry.IsEstimated)
             .GroupBy(entry => $"{entry.GameId}|{entry.SourceId}", StringComparer.OrdinalIgnoreCase)
             .Select(group => group
                 .OrderByDescending(entry => entry.CapturedAt)
@@ -1542,6 +1551,16 @@ public sealed class JsonPublishStage : IPublishStage
                         isStale ? entry.CapturedAt : null);
                 }).ToArray(),
                 StringComparer.OrdinalIgnoreCase);
+        var historyByGame = priceHistory
+            .Where(entry => entry.CurrentPrice is not null)
+            .GroupBy(entry => entry.GameId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<PriceHistoryEntry>)group
+                    .OrderBy(entry => entry.CapturedAt)
+                    .ThenBy(entry => entry.ObservationId)
+                    .ToArray(),
+                StringComparer.OrdinalIgnoreCase);
         var capturedAt = DateTimeOffset.UtcNow;
         var catalog = metadata
             .GroupBy(game => NormalizeTitle(game.CanonicalTitle), StringComparer.Ordinal)
@@ -1558,6 +1577,12 @@ public sealed class JsonPublishStage : IPublishStage
                         offersByGame.TryGetValue(entry.GameId, out var gameOffers)
                             ? gameOffers
                             : Array.Empty<PersistedOffer>())
+                    .ToArray();
+                var gameHistory = entries
+                    .SelectMany(entry =>
+                        historyByGame.TryGetValue(entry.GameId, out var gameHistoryEntries)
+                            ? gameHistoryEntries
+                            : Array.Empty<PriceHistoryEntry>())
                     .ToArray();
                 return new CatalogExportEntry(
                     primary.GameId,
@@ -1584,7 +1609,8 @@ public sealed class JsonPublishStage : IPublishStage
                         .FirstOrDefault(value => value is not null),
                     capturedAt,
                     offers.Any(offer => offer.IsHistoricalLow),
-                    offers);
+                    offers,
+                    gameHistory);
             }).ToArray();
 
         await WriteJsonAsync(_historyPath, priceHistory, cancellationToken);
@@ -1604,6 +1630,21 @@ public sealed class JsonPublishStage : IPublishStage
             stream,
             JsonOptions,
             cancellationToken) ?? Array.Empty<CatalogExportEntry>();
+    }
+
+    private async Task<PriceHistoryEntry[]> ReadPreviousHistoryAsync(
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(_historyPath))
+        {
+            return Array.Empty<PriceHistoryEntry>();
+        }
+
+        await using var stream = File.OpenRead(_historyPath);
+        return await JsonSerializer.DeserializeAsync<PriceHistoryEntry[]>(
+            stream,
+            JsonOptions,
+            cancellationToken) ?? Array.Empty<PriceHistoryEntry>();
     }
 
     private static async Task WriteJsonAsync<T>(
@@ -1628,7 +1669,7 @@ public sealed class JsonPublishStage : IPublishStage
         Regex.Replace(title.ToLowerInvariant(), @"[^\p{L}\p{N}]+", " ").Trim();
 
     private static string HistoryKey(PriceHistoryEntry entry) =>
-        $"{entry.GameId}|{entry.SourceId}|{entry.CapturedAt:O}|{entry.CurrentPrice}";
+        $"{entry.GameId}|{entry.SourceId}|{entry.CapturedAt:O}|{entry.CurrentPrice}|{entry.IsEstimated}";
 
     private static decimal? ResolveRegularPrice(
         PriceHistoryEntry entry,
@@ -1673,7 +1714,8 @@ public sealed class JsonPublishStage : IPublishStage
         int? CompletionistMinutes,
         DateTimeOffset CapturedAt,
         bool IsHistoricalLow,
-        IReadOnlyList<PersistedOffer> Offers);
+        IReadOnlyList<PersistedOffer> Offers,
+        IReadOnlyList<PriceHistoryEntry> History);
 }
 
 public static class ChannelStageWorkers
