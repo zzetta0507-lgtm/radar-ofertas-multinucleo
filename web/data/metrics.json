@@ -1,34 +1,34 @@
 {
-  "generatedAt": "2026-11-17T06:42:38.2778099+00:00",
-  "lastRunAt": "2026-11-17T06:25:25.4671645+00:00",
+  "generatedAt": "2026-11-17T07:18:07.7226364+00:00",
+  "lastRunAt": "2026-11-17T07:00:55.9936966+00:00",
   "mode": "Parallel",
-  "durationMs": 1032810.9719,
+  "durationMs": 1031729.2274,
   "unmatchedGames": 4,
-  "uncertainMatches": 153,
+  "uncertainMatches": 155,
   "stageDurations": [
     {
       "name": "Descubrimiento",
-      "durationMs": 903900.6101
+      "durationMs": 902202.7618
     },
     {
       "name": "Descarga",
-      "durationMs": 971626.9061
+      "durationMs": 969547.3138
     },
     {
       "name": "An\u00E1lisis",
-      "durationMs": 971622.1476
+      "durationMs": 969543.3134
     },
     {
       "name": "Emparejamiento",
-      "durationMs": 971630.8053
+      "durationMs": 969544.0435
     },
     {
       "name": "Persistencia",
-      "durationMs": 971631.5026
+      "durationMs": 969544.828
     },
     {
       "name": "Publicaci\u00F3n",
-      "durationMs": 971879.3487
+      "durationMs": 969871.4369
     }
   ],
   "requestsBySite": [
@@ -41,10 +41,10 @@
     },
     {
       "site": "Eneba",
-      "successful": 167,
+      "successful": 162,
       "retried": 0,
-      "failed": 794,
-      "total": 961
+      "failed": 797,
+      "total": 959
     },
     {
       "site": "Epic Games Store",
@@ -55,31 +55,31 @@
     },
     {
       "site": "GamersGate",
-      "successful": 961,
+      "successful": 959,
       "retried": 0,
       "failed": 0,
-      "total": 961
+      "total": 959
     },
     {
       "site": "GOG",
-      "successful": 954,
+      "successful": 952,
       "retried": 0,
       "failed": 7,
-      "total": 961
+      "total": 959
     },
     {
       "site": "Green Man Gaming",
       "successful": 0,
       "retried": 0,
-      "failed": 960,
-      "total": 960
+      "failed": 958,
+      "total": 958
     },
     {
       "site": "Humble Store",
       "successful": 0,
       "retried": 0,
-      "failed": 960,
-      "total": 960
+      "failed": 958,
+      "total": 958
     },
     {
       "site": "OpenCritic",
@@ -90,10 +90,10 @@
     },
     {
       "site": "Steam",
-      "successful": 923,
+      "successful": 964,
       "retried": 0,
-      "failed": 43,
-      "total": 966
+      "failed": 0,
+      "total": 964
     }
   ]
 }
