@@ -1,34 +1,34 @@
 {
-  "generatedAt": "2026-11-17T04:21:06.7207081+00:00",
-  "lastRunAt": "2026-11-17T04:04:53.2594451+00:00",
+  "generatedAt": "2026-11-17T04:55:39.8061095+00:00",
+  "lastRunAt": "2026-11-17T04:39:26.3654166+00:00",
   "mode": "Parallel",
-  "durationMs": 973461.938,
+  "durationMs": 973441.3966,
   "unmatchedGames": 4,
   "uncertainMatches": 153,
   "stageDurations": [
     {
       "name": "Descubrimiento",
-      "durationMs": 904896.6397
+      "durationMs": 904915.4069
     },
     {
       "name": "Descarga",
-      "durationMs": 972510.7463
+      "durationMs": 972559.9261
     },
     {
       "name": "An\u00E1lisis",
-      "durationMs": 972504.7091
+      "durationMs": 972550.3458
     },
     {
       "name": "Emparejamiento",
-      "durationMs": 972506.5183
+      "durationMs": 972551.8187
     },
     {
       "name": "Persistencia",
-      "durationMs": 972506.839
+      "durationMs": 972551.8653
     },
     {
       "name": "Publicaci\u00F3n",
-      "durationMs": 972830.1124
+      "durationMs": 972876.8592
     }
   ],
   "requestsBySite": [
@@ -41,9 +41,9 @@
     },
     {
       "site": "Eneba",
-      "successful": 291,
+      "successful": 169,
       "retried": 0,
-      "failed": 671,
+      "failed": 793,
       "total": 962
     },
     {
