@@ -168,9 +168,11 @@ El modo concurrente ejecuta las etapas como productores y consumidores separados
 
 No hay un benchmark en vivo en los archivos disponibles, ni una pareja de ejecuciones con los mismos datos, configuración y repeticiones que permita calcular la diferencia. `--run-benchmarks` requiere `--source replay`; el modo replay evita solicitudes de red y en esta configuración simula cero latencia. Por consiguiente, **no se puede cuantificar la cercanía entre ejecución en vivo y replay** con las mediciones registradas. La latencia real, límites de cada dominio, variabilidad de red, respuestas y fallos de fuentes serían factores de diferencia que se deben medir con una campaña en vivo separada.
 
-### 8. ¿Qué tanto se acercaron las predicciones del Hito 1 a las mediciones, y qué supuesto falló?
+### Pregunta 8: ¿Qué tanto se acercaron las predicciones del Hito 1 a las mediciones, y qué supuesto falló?
 
-> **[COMPLETAR MANUALMENTE SIN IA POR EL EQUIPO]:** Redactar aquí las predicciones teóricas realizadas en el Hito 1 antes de ejecutar los benchmarks y contrastar qué supuesto falló frente a los valores medidos.
+Al contrastar nuestras predicciones iniciales con los datos reales de las pruebas, nos dimos cuenta de que **el principal supuesto que falló fue creer que la red sería nuestro único cuello de botella**. Como usamos el modo *replay* con respuestas locales, la etapa de descarga volaba muchísimo más rápido de lo que habíamos calculado en el papel, dejando al procesador con tiempo libre en lugar de estancado por la red.
+
+Debido a esto, el verdadero freno del sistema cambió por completo: pasó a ser la base de datos (SQLite) y la sincronización de hilos. Lanzar demasiados *workers* al mismo tiempo no aceleró las cosas infinitamente como esperábamos, sino que provocó contención y bloqueos cuando todos intentaban escribir los precios y el historial simultáneamente. Además, en la CPU el rendimiento no escaló de manera ideal (4x o 5x) porque coordinar tantas tareas generó una sobrecarga (*overhead*). En resumen, aprendimos que en la práctica los cuellos de botella se mueven de la red al almacenamiento y que más hilos no siempre significan más velocidad.
 
 ## 7. Conclusiones y límites
 
