@@ -2,6 +2,8 @@
   "use strict";
 
   const PAGE_SIZE = 12;
+  const FALLBACK_CRC_RATE = 510;
+  const PRICE_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
   const DATA_FILES = {
     catalog: "./data/catalog.json",
     history: "./data/history.json",
@@ -27,7 +29,13 @@
     xbox: "Xbox Store",
     epic: "Epic Games Store",
     epicgamesstore: "Epic Games Store",
+    epicgames: "Epic Games Store",
     gog: "GOG",
+    eneba: "Eneba",
+    humble: "Humble Store",
+    humblestore: "Humble Store",
+    gmg: "Green Man Gaming",
+    greenmangaming: "Green Man Gaming",
     amazon: "Amazon",
     walmart: "Walmart",
     bestbuy: "Best Buy",
@@ -43,11 +51,25 @@
     benchmarks: null,
     page: 1,
     charts: [],
-    detailChart: null
+    detailChart: null,
+    catalogPayload: null,
+    historyPayload: null,
+    refreshing: false,
+    cheapSharkStores: null,
+    dialogGameId: null,
+    exchangeRate: FALLBACK_CRC_RATE,
+    exchangeRateUpdatedAt: 0,
+    displayCurrency: "CRC",
+    showDealsOnly: false,
+    lastRefreshAt: null
   };
 
   const elements = {
     updated: document.querySelector("#last-updated"),
+    refresh: document.querySelector("#refresh-button"),
+    currencyCrc: document.querySelector("#currency-crc"),
+    currencyUsd: document.querySelector("#currency-usd"),
+    dealsFilter: document.querySelector("#deals-filter"),
     grid: document.querySelector("#catalog-grid"),
     empty: document.querySelector("#catalog-empty"),
     emptyTitle: document.querySelector("#empty-title"),
@@ -122,16 +144,30 @@
     }
   }
 
-  function formatMoney(value, currency) {
+  function convertedAmount(value, currency) {
     const amount = numberOrNull(value);
+    if (amount === null) return null;
+    const sourceCurrency = String(currency || "USD").toUpperCase();
+    if (sourceCurrency === state.displayCurrency) return amount;
+    if (sourceCurrency === "USD" && state.displayCurrency === "CRC") {
+      return amount * state.exchangeRate;
+    }
+    if (sourceCurrency === "CRC" && state.displayCurrency === "USD") {
+      return amount / state.exchangeRate;
+    }
+    return amount;
+  }
+
+  function formatMoney(value, currency) {
+    const amount = convertedAmount(value, currency);
     if (amount === null) return "Sin precio";
-    const code = String(currency || "CRC").toUpperCase();
+    const code = state.displayCurrency;
     if (!currencyFormatters.has(code)) {
       try {
         currencyFormatters.set(code, new Intl.NumberFormat("es-CR", {
           style: "currency",
           currency: code,
-          maximumFractionDigits: 2
+          maximumFractionDigits: code === "CRC" ? 0 : 2
         }));
       } catch {
         currencyFormatters.set(code, new Intl.NumberFormat("es-CR", {
@@ -140,6 +176,85 @@
       }
     }
     return currencyFormatters.get(code).format(amount);
+  }
+
+  function formatMoneyWithReference(value, currency) {
+    const primary = formatMoney(value, currency);
+    if (numberOrNull(value) === null || state.displayCurrency !== "CRC" ||
+        String(currency || "USD").toUpperCase() !== "USD") return primary;
+    return `${primary} · ${new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 2
+    }).format(Number(value))}`;
+  }
+
+  async function loadExchangeRate() {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 8000);
+    try {
+      const response = await fetch("https://open.er-api.com/v6/latest/USD", {
+        cache: "no-store",
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error(`Tipo de cambio HTTP ${response.status}`);
+      const payload = await response.json();
+      const rate = numberOrNull(payload?.rates?.CRC);
+      if (payload?.result !== "success" || rate === null || rate <= 0) {
+        throw new Error("La respuesta no contiene el tipo de cambio CRC.");
+      }
+      state.exchangeRate = rate;
+    } catch {
+      state.exchangeRate = FALLBACK_CRC_RATE;
+    } finally {
+      window.clearTimeout(timeout);
+      state.exchangeRateUpdatedAt = Date.now();
+    }
+  }
+
+  function hasActiveDiscount(offer, game) {
+    if (offer.currentPrice === null) return false;
+    const regular = numberOrNull(offer.regularPrice) ??
+      (String(offer.currency || "USD").toUpperCase() === String(game.currency || "USD").toUpperCase()
+        ? numberOrNull(game.msrp)
+        : null);
+    return regular !== null && regular > 0 && offer.currentPrice < regular;
+  }
+
+  function discountPercent(offer, game) {
+    if (!hasActiveDiscount(offer, game)) return null;
+    const regular = numberOrNull(offer.regularPrice) ??
+      (String(offer.currency || "USD").toUpperCase() === String(game.currency || "USD").toUpperCase()
+        ? numberOrNull(game.msrp)
+        : null);
+    return Math.round((1 - offer.currentPrice / regular) * 100);
+  }
+
+  function priceFreshness(offer, game) {
+    const capturedAt = offer.staleSince || offer.capturedAt;
+    const captured = capturedAt ? new Date(capturedAt) : null;
+    const validDate = captured !== null && !Number.isNaN(captured.getTime());
+    const stale = validDate &&
+      Date.now() - captured.getTime() > PRICE_STALE_AFTER_MS;
+    if (stale || game.liveFailed) {
+      return `<span class="stale-label">Dato desactualizado desde ${escapeHtml(formatDate(capturedAt))}</span>`;
+    }
+    const now = new Date();
+    if (validDate &&
+        captured.getFullYear() === now.getFullYear() &&
+        captured.getMonth() === now.getMonth() &&
+        captured.getDate() === now.getDate()) {
+      return `<span class="fresh-label">Actualizado hoy</span>`;
+    }
+    return `<span class="fresh-label">${validDate
+      ? `Actualizado ${escapeHtml(formatDate(capturedAt))}`
+      : "Fecha no disponible"}</span>`;
+  }
+
+  function normalizeDiscount(current, regular) {
+    if (current === null || regular === null || regular <= 0 || current >= regular) return null;
+    const percent = Math.round((1 - current / regular) * 100);
+    return percent > 0 ? percent : null;
   }
 
   function formatDuration(value, key = "") {
@@ -183,10 +298,9 @@
   function normalizeOffer(raw, fallbackStore = "") {
     const currentPrice = numberOrNull(raw.currentPrice ?? raw.price ?? raw.bestPrice);
     const regularPrice = numberOrNull(raw.regularPrice ?? raw.listPrice ?? raw.msrpAtStore);
-    let discountPercent = numberOrNull(raw.discountPercent ?? raw.discount);
-    if (discountPercent === null && currentPrice !== null && regularPrice > 0) {
-      discountPercent = Math.max(0, Math.round((1 - currentPrice / regularPrice) * 100));
-    }
+    const reportedDiscount = numberOrNull(raw.discountPercent ?? raw.discount);
+    const discountPercent = normalizeDiscount(currentPrice, regularPrice) ??
+      (reportedDiscount > 0 && currentPrice !== null && regularPrice === null ? reportedDiscount : null);
     return {
       store: normalizeStore(raw.store ?? raw.storeName ?? raw.sourceName ?? raw.sourceId ?? fallbackStore),
       sourceId: String(raw.sourceId ?? raw.storeId ?? fallbackStore ?? ""),
@@ -284,6 +398,14 @@
       for (const offer of offers) {
         if (offer.currentPrice !== null || offer.regularPrice !== null) {
           game.offers.push(offer);
+          if (offer.currentPrice !== null && offer.capturedAt) {
+            game.history.push({
+              store: offer.store,
+              price: offer.currentPrice,
+              currency: offer.currency,
+              capturedAt: offer.capturedAt
+            });
+          }
         }
       }
     }
@@ -347,14 +469,17 @@
       if (selectedPlatform && !game.platforms.includes(selectedPlatform)) return false;
       if (selectedFormat && !game.offers.some(offer => offer.format === selectedFormat)) return false;
       if (selectedStore && !game.offers.some(offer => offer.store === selectedStore)) return false;
+      if (state.showDealsOnly && !game.offers.some(offer => hasActiveDiscount(offer, game))) return false;
       return true;
     });
 
     const priceOf = game => {
-      const prices = game.offers.map(offer => offer.currentPrice).filter(value => value !== null);
+      const prices = game.offers
+        .filter(offer => offer.currentPrice !== null)
+        .map(offer => convertedAmount(offer.currentPrice, offer.currency));
       return prices.length ? Math.min(...prices) : Number.POSITIVE_INFINITY;
     };
-    const discountOf = game => Math.max(0, ...game.offers.map(offer => offer.discountPercent || 0));
+    const discountOf = game => Math.max(0, ...game.offers.map(offer => discountPercent(offer, game) || 0));
     const sorters = {
       name: (a, b) => a.title.localeCompare(b.title, "es"),
       price: (a, b) => priceOf(a) - priceOf(b) || a.title.localeCompare(b.title, "es"),
@@ -415,9 +540,9 @@
   function renderCard(game, index) {
     const pricedOffers = game.offers
       .filter(offer => offer.currentPrice !== null)
-      .sort((a, b) => a.currentPrice - b.currentPrice);
+      .sort((a, b) => convertedAmount(a.currentPrice, a.currency) - convertedAmount(b.currentPrice, b.currency));
     const best = pricedOffers[0];
-    const topDiscount = best?.discountPercent ?? Math.max(0, ...game.offers.map(offer => offer.discountPercent || 0));
+    const topDiscount = best ? discountPercent(best, game) : null;
     const historicalLow = game.historicalLow || Boolean(best?.historicalLow);
     const score = game.metacritic ?? game.openCritic;
     const scoreLabel = game.metacritic !== null ? "METACRITIC" : game.openCritic !== null ? "OPENCRITIC" : "";
@@ -433,7 +558,7 @@
           ${cover
             ? `<img class="card-image" src="${escapeHtml(cover)}" alt="Portada de ${alt}" loading="lazy" referrerpolicy="no-referrer" data-fallback="${escapeHtml(game.title.slice(0, 1).toUpperCase())}">`
             : `<div class="card-image-placeholder">${escapeHtml(game.title.slice(0, 1).toUpperCase())}</div>`}
-          ${topDiscount > 0 ? `<span class="discount-badge">−${topDiscount}%</span>` : ""}
+          ${topDiscount ? `<span class="discount-badge">−${topDiscount}%</span>` : ""}
           ${historicalLow ? `<span class="historic-badge">MÍNIMO HISTÓRICO</span>` : ""}
         </div>
         <div class="game-card-body">
@@ -441,8 +566,10 @@
           <div class="card-platforms">${platformTags || `<span class="platform-tag">Plataforma no indicada</span>`}</div>
           <div class="card-bottom">
             <div class="price-block">
-              <strong class="price-current ${best ? "" : "no-price"}">${best ? formatMoney(best.currentPrice, best.currency) : "Sin ofertas"}</strong>
-              <span class="price-regular">${best?.regularPrice !== null && best?.regularPrice !== undefined ? formatMoney(best.regularPrice, best.currency) : " "}</span>
+              <strong class="price-current ${best ? "" : "no-price"}">${best ? escapeHtml(formatMoneyWithReference(best.currentPrice, best.currency)) : "Sin ofertas"}</strong>
+              <span class="price-regular ${topDiscount ? "discount-reference" : ""}">${topDiscount
+                ? `<s>${escapeHtml(formatMoneyWithReference(best.regularPrice ?? game.msrp, best.currency))}</s>`
+                : best ? `<span class="price-regular-label">Precio regular</span>` : ""}</span>
             </div>
             <div class="rating-block">
               ${score !== null
@@ -450,7 +577,7 @@
                 : `<span class="rating-source">SIN CALIFICACIÓN</span>`}
             </div>
           </div>
-          ${sourceLine ? `<p class="card-store">Mejor precio en ${sourceLine}${best.isStale ? ` · <span class="stale-label">dato desactualizado desde ${escapeHtml(formatDate(best.staleSince || best.capturedAt))}</span>` : ""}</p>` : ""}
+          ${sourceLine ? `<p class="card-store">Mejor precio en ${sourceLine} · ${priceFreshness(best, game)}</p>` : ""}
           <button class="card-open" type="button" data-game-id="${escapeHtml(game.id)}">Ver detalle <span aria-hidden="true">→</span></button>
         </div>
       </article>`;
@@ -491,7 +618,7 @@
 
   function updateSummary() {
     const deals = state.games.filter(game => game.offers.some(offer =>
-      offer.currentPrice !== null && (offer.discountPercent || 0) > 0)).length;
+      hasActiveDiscount(offer, game))).length;
     const stores = new Set(state.games.flatMap(game => game.offers.map(offer => offer.store)));
     const platforms = new Set(state.games.flatMap(game => game.platforms));
     document.querySelector("#stat-games").textContent = state.games.length.toLocaleString("es-CR");
@@ -502,6 +629,7 @@
 
   function updateTimestamp(catalogPayload, metricsPayload, benchmarksPayload) {
     const candidates = [
+      state.lastRefreshAt,
       metricsPayload?.lastRunAt,
       metricsPayload?.lastRun,
       metricsPayload?.generatedAt,
@@ -692,15 +820,59 @@
     state.charts = [];
   }
 
-  function openGameDetails(gameId) {
+  function renderDetailPriceRow(offer, game) {
+    const link = safeHttpUrl(offer.url);
+    const activeDiscount = hasActiveDiscount(offer, game);
+    const discount = discountPercent(offer, game);
+    const regular = numberOrNull(offer.regularPrice) ??
+      (String(offer.currency || "USD").toUpperCase() === String(game.currency || "USD").toUpperCase()
+        ? numberOrNull(game.msrp)
+        : null);
+    const regularLabel = activeDiscount && regular !== null
+      ? `<s>${escapeHtml(formatMoneyWithReference(regular, offer.currency))}</s> <span class="price-discount">−${discount}%</span>`
+      : `<span class="regular-price-label">Precio regular</span>`;
+    const updateLabel = offer.isLive
+      ? `<span class="fresh-label">Oferta en vivo</span>`
+      : priceFreshness(offer, game);
+    return `<div class="detail-price-row">
+      <strong>${escapeHtml(offer.store)}</strong>
+      <span>${escapeHtml(formatMoneyWithReference(offer.currentPrice, offer.currency))} ${regularLabel}</span>
+      <small>${updateLabel}${offer.cheapestPriceEver !== null && offer.cheapestPriceEver !== undefined
+        ? ` · Mínimo histórico: ${escapeHtml(formatMoneyWithReference(offer.cheapestPriceEver, offer.currency))}`
+        : ""}</small>
+      ${link ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">Abrir tienda ↗</a>` : `<small>Enlace no disponible</small>`}
+    </div>`;
+  }
+
+  function renderLiveDeals(game) {
+    const container = document.querySelector("#live-deals");
+    if (!container) return;
+    const offers = game.liveOffers || [];
+    if (game.liveLoading) {
+      container.innerHTML = `<span class="detail-empty">Consultando CheapShark; los precios guardados permanecen visibles.</span>`;
+    } else if (game.liveFailed) {
+      container.innerHTML = `<div class="detail-empty">No se pudo consultar CheapShark por un error de red/CORS. Se muestran las observaciones guardadas.</div>`;
+    } else if (offers.length) {
+      container.innerHTML = `<span class="fresh-label">${offers.length} tiendas actualizadas en vivo</span>`;
+    } else {
+      container.innerHTML = `<span class="detail-empty">Sin ofertas en vivo; se conservan las observaciones guardadas.</span>`;
+    }
+  }
+
+  function openGameDetails(gameId, refreshLive = true) {
     const game = state.games.find(item => item.id === gameId);
     if (!game) return;
     state.dialogChart?.destroy();
     state.dialogChart = null;
+    state.dialogGameId = game.id;
     const cover = safeHttpUrl(game.cover);
-    const prices = game.offers
+    const offersByStore = new Map(game.offers
       .filter(offer => offer.currentPrice !== null)
-      .sort((a, b) => a.currentPrice - b.currentPrice);
+      .map(offer => [offer.store, offer]));
+    (game.liveOffers || []).forEach(offer => offersByStore.set(offer.store, offer));
+    const prices = [...offersByStore.values()]
+      .sort((a, b) =>
+        convertedAmount(a.currentPrice, a.currency) - convertedAmount(b.currentPrice, b.currency));
     const ratings = [
       ["Metacritic", game.metacritic],
       ["OpenCritic", game.openCritic]
@@ -711,16 +883,7 @@
       ["Completista", game.completionist, "completionistMinutes"]
     ];
     const detailPriceRows = prices.length
-      ? prices.map(offer => {
-        const link = safeHttpUrl(offer.url);
-        return `<div class="detail-price-row">
-          <strong>${escapeHtml(offer.store)}</strong>
-          <span>${formatMoney(offer.currentPrice, offer.currency)}${offer.regularPrice !== null ? ` <small><s>${formatMoney(offer.regularPrice, offer.currency)}</s></small>` : ""}</span>
-          <small>${formatDate(offer.capturedAt)}</small>
-          ${offer.isStale ? `<small class="stale-label">Dato desactualizado desde ${escapeHtml(formatDate(offer.staleSince || offer.capturedAt))}</small>` : ""}
-          ${link ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">Abrir tienda ↗</a>` : `<small>Enlace no disponible</small>`}
-        </div>`;
-      }).join("")
+      ? prices.map(offer => renderDetailPriceRow(offer, game)).join("")
       : `<div class="detail-empty">No hay observaciones de precio disponibles para este juego.</div>`;
 
     const scores = ratings.length
@@ -740,7 +903,7 @@
           <h2 class="detail-title" id="dialog-title">${escapeHtml(game.title)}</h2>
           <div class="detail-meta">${platforms}</div>
           <div class="detail-stats">
-            <div class="detail-stat"><span>MSRP</span><strong>${game.msrp === null ? "No disponible" : formatMoney(game.msrp, game.currency)}</strong></div>
+            <div class="detail-stat"><span>MSRP</span><strong>${game.msrp === null ? "No disponible" : escapeHtml(formatMoneyWithReference(game.msrp, game.currency))}</strong></div>
             ${ratings.length ? ratings.map(([name, value]) => `<div class="detail-stat"><span>${escapeHtml(name)}</span><strong>${escapeHtml(value)}</strong></div>`).join("") : ""}
           </div>
         </div>
@@ -748,6 +911,7 @@
       <section class="detail-section">
         <h3>Precios disponibles</h3>
         <div class="detail-prices">${detailPriceRows}</div>
+        <p id="live-deals" class="live-deal-status"></p>
       </section>
       <section class="detail-section">
         <h3>How Long To Beat</h3>
@@ -759,8 +923,131 @@
         <p id="detail-history-empty" class="detail-empty" hidden>No hay historial de precios publicado.</p>
       </section>`;
 
-    elements.dialog.showModal();
+    renderLiveDeals(game);
+    if (!elements.dialog.open) elements.dialog.showModal();
     renderDetailChart(game);
+    if (refreshLive) loadLiveDeals(game);
+  }
+
+  async function loadLiveDeals(game) {
+    if (game.liveLoading) return;
+    game.liveLoading = true;
+    game.liveFailed = false;
+    renderLiveDeals(game);
+    try {
+      state.cheapSharkStores ||= fetch("https://www.cheapshark.com/api/1.0/stores")
+        .then(response => {
+          if (!response.ok) throw new Error(`Tiendas HTTP ${response.status}`);
+          return response.json();
+        })
+        .catch(error => {
+          state.cheapSharkStores = null;
+          throw error;
+        });
+      const [searchResponse, stores] = await Promise.all([
+        fetch(`https://www.cheapshark.com/api/1.0/games?title=${encodeURIComponent(game.title)}&limit=5`, { cache: "no-store" }),
+        state.cheapSharkStores
+      ]);
+      if (!searchResponse.ok) throw new Error(`Búsqueda CheapShark HTTP ${searchResponse.status}`);
+      const searchResults = await searchResponse.json();
+      const bestMatch = (Array.isArray(searchResults) ? searchResults : [])
+        .map(row => ({
+          row,
+          score: titleSimilarity(game.title, row.external || row.title || row.internalName || "")
+        }))
+        .sort((a, b) => b.score - a.score)[0];
+      if (!bestMatch || bestMatch.score < 0.8 || !bestMatch.row.gameID) {
+        game.liveOffers = [];
+        game.liveLoading = false;
+        if (state.dialogGameId === game.id && elements.dialog.open) {
+          openGameDetails(game.id, false);
+        }
+        return;
+      }
+
+      const [gameResponse] = await Promise.all([
+        fetch(`https://www.cheapshark.com/api/1.0/games?id=${encodeURIComponent(bestMatch.row.gameID)}`, { cache: "no-store" })
+      ]);
+      if (!gameResponse.ok) throw new Error(`Detalle CheapShark HTTP ${gameResponse.status}`);
+      const [gameData, storeRows] = await Promise.all([gameResponse.json(), stores]);
+      if (state.dialogGameId !== game.id || !elements.dialog.open) {
+        game.liveLoading = false;
+        return;
+      }
+      const info = gameData?.info || {};
+      const deals = Array.isArray(gameData?.deals) ? gameData.deals : [];
+      const storeNames = new Map((Array.isArray(storeRows) ? storeRows : [])
+        .filter(store => store && String(store.isActive) !== "0")
+        .map(store => [String(store.storeID), String(store.storeName || `Tienda ${store.storeID}`)]));
+      const cheapestPriceEver = numberOrNull(gameData?.cheapestPriceEver?.price);
+      const capturedAt = new Date().toISOString();
+      game.liveOffers = deals
+        .filter(deal => numberOrNull(deal.price) !== null)
+        .map(deal => ({
+          store: normalizeStore(storeNames.get(String(deal.storeID)) || `Tienda ${deal.storeID}`),
+          sourceId: String(deal.storeID),
+          currentPrice: numberOrNull(deal.price),
+          regularPrice: numberOrNull(deal.retailPrice),
+          currency: "USD",
+          discountPercent: normalizeDiscount(
+            numberOrNull(deal.price),
+            numberOrNull(deal.retailPrice)),
+          url: cheapSharkDealUrl(deal.dealID),
+          capturedAt,
+          isLive: true,
+          cheapestPriceEver
+        }))
+        .sort((a, b) => a.currentPrice - b.currentPrice);
+      game.liveOffers.forEach(offer => {
+        game.history = game.history.filter(point => !(point.isLive && point.store === offer.store));
+        game.history.push({
+          store: offer.store,
+          price: offer.currentPrice,
+          currency: offer.currency,
+          capturedAt,
+          isLive: true
+        });
+      });
+      game.liveFailed = false;
+      game.liveLoading = false;
+      if (info.thumb && !game.cover) game.cover = safeHttpUrl(info.thumb);
+      renderCatalog();
+      openGameDetails(game.id, false);
+    } catch (error) {
+      game.liveFailed = true;
+      game.liveLoading = false;
+      console.warn("No se pudieron actualizar las ofertas en vivo de CheapShark.", error);
+      if (state.dialogGameId === game.id && elements.dialog.open) {
+        renderCatalog();
+        openGameDetails(game.id, false);
+      }
+    }
+  }
+
+  function cheapSharkDealUrl(dealId) {
+    if (!dealId) return "";
+    let normalized = String(dealId);
+    try { normalized = decodeURIComponent(normalized); } catch { /* Keep the encoded id. */ }
+    return safeHttpUrl(`https://www.cheapshark.com/redirect?dealID=${encodeURIComponent(normalized)}`);
+  }
+
+  function titleSimilarity(left, right) {
+    const a = normalizeTitle(left);
+    const b = normalizeTitle(right);
+    if (!a || !b) return 0;
+    if (a === b) return 1;
+    const aTokens = new Set(a.split(" "));
+    const bTokens = new Set(b.split(" "));
+    const dice = 2 * [...aTokens].filter(token => bTokens.has(token)).length /
+      Math.max(1, aTokens.size + bTokens.size);
+    if ((a.startsWith(`${b} `) || b.startsWith(`${a} `)) &&
+        Math.abs(aTokens.size - bTokens.size) <= 2) return Math.max(.82, dice);
+    return dice;
+  }
+
+  function normalizeTitle(value) {
+    return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .toLocaleLowerCase("en").replace(/[^a-z0-9]+/g, " ").trim();
   }
 
   function renderDetailChart(game) {
@@ -787,22 +1074,38 @@
       .map(point => new Date(point.capturedAt).toISOString()))]
       .sort();
     const dateIndex = new Map(dateKeys.map((date, index) => [date, index]));
-    const labels = dateKeys.map(date => formatDate(date, { dateStyle: "short" }));
+    const labels = dateKeys.map(date => {
+      const hasLivePoint = history.some(point => point.isLive &&
+        new Date(point.capturedAt).toISOString() === date);
+      return formatDate(date, hasLivePoint
+        ? { dateStyle: "short", timeStyle: "short" }
+        : { dateStyle: "short" });
+    });
     const palette = ["#c8f169", "#76cde0", "#ff9a66", "#c39af7", "#ff777f", "#f4d36a"];
-    const datasets = [...grouped.entries()].map(([store, points], index) => ({
-      label: store,
-      data: points.reduce((values, point) => {
+    const datasets = [...grouped.entries()].map(([store, points], index) => {
+      const values = Array(dateKeys.length).fill(null);
+      const originalValues = Array(dateKeys.length).fill(null);
+      points.forEach(point => {
         const key = new Date(point.capturedAt).toISOString();
         const position = dateIndex.get(key);
-        if (position !== undefined) values[position] = point.price;
-        return values;
-      }, Array(dateKeys.length).fill(null)),
-      borderColor: palette[index % palette.length],
-      backgroundColor: palette[index % palette.length],
-      pointRadius: 2,
-      borderWidth: 2,
-      tension: .25
-    }));
+        if (position !== undefined) {
+          values[position] = convertedAmount(point.price, point.currency);
+          originalValues[position] = { price: point.price, currency: point.currency, isLive: point.isLive };
+        }
+      });
+      return {
+        label: store,
+        data: values,
+        originalValues,
+        borderColor: palette[index % palette.length],
+        backgroundColor: palette[index % palette.length],
+        pointRadius: originalValues.map(point => point?.isLive ? 5 : 2),
+        pointBackgroundColor: originalValues.map(point =>
+          point?.isLive ? "#c8f169" : palette[index % palette.length]),
+        borderWidth: 2,
+        tension: .25
+      };
+    });
     if (!datasets.length) {
       canvas.hidden = true;
       empty.hidden = false;
@@ -818,17 +1121,23 @@
         interaction: { intersect: false, mode: "nearest" },
         plugins: {
           legend: { labels: { color: "#b6bac4", boxWidth: 9, usePointStyle: true, font: { size: 10 } } },
-          tooltip: { callbacks: { label: item => `${item.dataset.label}: ${formatMoney(item.parsed.y, game.currency)}` } }
+          tooltip: { callbacks: { label: item => {
+            const original = item.dataset.originalValues?.[item.dataIndex];
+            return `${item.dataset.label}: ${original
+              ? formatMoneyWithReference(original.price, original.currency)
+              : formatMoney(item.parsed.y, state.displayCurrency)}`;
+          } } }
         },
         scales: {
           x: { grid: { color: "rgba(255,255,255,.06)" }, ticks: { color: "#858a97", maxTicksLimit: 6 } },
-          y: { grid: { color: "rgba(255,255,255,.07)" }, ticks: { color: "#858a97", callback: value => formatMoney(value, game.currency) } }
+          y: { grid: { color: "rgba(255,255,255,.07)" }, ticks: { color: "#858a97", callback: value => formatMoney(value, state.displayCurrency) } }
         }
       }
     });
   }
 
   async function initialize() {
+    const exchangeRatePromise = loadExchangeRate();
     const paths = Object.values(DATA_FILES);
     const loaded = await Promise.allSettled(paths.map(loadJson));
     const values = {};
@@ -842,8 +1151,10 @@
       }
     });
 
-    state.games = normalizeCatalog(values.catalog);
-    mergeHistory(values.history);
+    state.catalogPayload = values.catalog;
+    state.historyPayload = values.history;
+    state.games = normalizeCatalog(state.catalogPayload);
+    mergeHistory(state.historyPayload);
     state.metrics = values.metrics;
     state.benchmarks = values.benchmarks;
     renderFilters();
@@ -855,6 +1166,75 @@
       elements.error.hidden = false;
       elements.error.textContent = errors.join(" ");
     }
+    await exchangeRatePromise;
+    renderCatalog();
+    if (state.dialogGameId && elements.dialog.open) openGameDetails(state.dialogGameId, false);
+  }
+
+  function preserveLiveState(nextGames) {
+    const previous = new Map(state.games.map(game => [game.id, game]));
+    for (const game of nextGames) {
+      const old = previous.get(game.id);
+      if (!old) continue;
+      game.liveOffers = old.liveOffers;
+      game.liveFailed = old.liveFailed;
+      game.liveLoading = old.liveLoading;
+      if (old.liveOffers?.length) {
+        game.history = game.history.filter(point => !point.isLive);
+        game.history.push(...old.history.filter(point => point.isLive));
+      }
+    }
+    return nextGames;
+  }
+
+  async function refreshLiveData() {
+    if (state.refreshing) return;
+    state.refreshing = true;
+    elements.refresh.disabled = true;
+    elements.refresh.textContent = "Actualizando…";
+    try {
+      const timestamp = Date.now();
+      const results = await Promise.allSettled([
+        loadJson(`${DATA_FILES.catalog}?t=${timestamp}`),
+        loadJson(`${DATA_FILES.metrics}?t=${timestamp}`),
+        Date.now() - state.exchangeRateUpdatedAt > 60 * 60 * 1000
+          ? loadExchangeRate()
+          : Promise.resolve()
+      ]);
+      const errors = [];
+      if (results[0].status === "fulfilled" && results[0].value) {
+        state.catalogPayload = results[0].value;
+        state.games = preserveLiveState(normalizeCatalog(state.catalogPayload));
+        mergeHistory(state.historyPayload);
+        renderFilters();
+        renderCatalog();
+      } else if (results[0].status === "rejected") {
+        errors.push(results[0].reason?.message || "No se pudo actualizar el catálogo.");
+      }
+      if (results[1].status === "fulfilled" && results[1].value) {
+        state.metrics = results[1].value;
+        renderMetrics(state.metrics, state.benchmarks);
+      } else if (results[1].status === "rejected") {
+        errors.push(results[1].reason?.message || "No se pudieron actualizar las métricas.");
+      }
+      if (results[2].status === "fulfilled") {
+        renderCatalog();
+      }
+      state.lastRefreshAt = new Date();
+      updateTimestamp(state.catalogPayload, state.metrics, state.benchmarks);
+      if (state.dialogGameId && elements.dialog.open) {
+        openGameDetails(state.dialogGameId);
+      }
+      elements.error.hidden = errors.length === 0;
+      elements.error.textContent = errors.join(" ");
+    } catch (error) {
+      elements.error.hidden = false;
+      elements.error.textContent = error.message || "No se pudieron actualizar los datos.";
+    } finally {
+      state.refreshing = false;
+      elements.refresh.disabled = false;
+      elements.refresh.textContent = "Actualizar ahora";
+    }
   }
 
   function resetFilters() {
@@ -864,6 +1244,8 @@
     elements.format.value = "";
     elements.store.value = "";
     elements.sort.value = "name";
+    state.showDealsOnly = false;
+    elements.dealsFilter.setAttribute("aria-pressed", "false");
     state.page = 1;
     renderCatalog();
   }
@@ -874,15 +1256,32 @@
       renderCatalog();
     }));
   document.querySelector("#reset-filters").addEventListener("click", resetFilters);
+  elements.dealsFilter.addEventListener("click", () => {
+    state.showDealsOnly = !state.showDealsOnly;
+    elements.dealsFilter.setAttribute("aria-pressed", String(state.showDealsOnly));
+    state.page = 1;
+    renderCatalog();
+  });
+  const updateCurrency = currency => {
+    state.displayCurrency = currency;
+    elements.currencyCrc.setAttribute("aria-pressed", String(currency === "CRC"));
+    elements.currencyUsd.setAttribute("aria-pressed", String(currency === "USD"));
+    renderCatalog();
+    if (state.dialogGameId && elements.dialog.open) openGameDetails(state.dialogGameId, false);
+  };
+  elements.currencyCrc.addEventListener("click", () => updateCurrency("CRC"));
+  elements.currencyUsd.addEventListener("click", () => updateCurrency("USD"));
   elements.grid.addEventListener("click", event => {
     const button = event.target.closest("[data-game-id]");
     if (button) openGameDetails(button.dataset.gameId);
   });
   document.querySelector("#dialog-close").addEventListener("click", () => elements.dialog.close());
+  elements.refresh.addEventListener("click", refreshLiveData);
   elements.dialog.addEventListener("click", event => {
     if (event.target === elements.dialog) elements.dialog.close();
   });
   elements.dialog.addEventListener("close", () => {
+    state.dialogGameId = null;
     state.detailChart?.destroy();
     state.detailChart = null;
   });
@@ -895,4 +1294,5 @@
   });
 
   initialize();
+  window.setInterval(refreshLiveData, 30_000);
 })();

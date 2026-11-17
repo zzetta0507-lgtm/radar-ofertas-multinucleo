@@ -54,6 +54,11 @@ public sealed class SqliteCatalogRepository
                 VALUES
                     ('opencritic', 'OpenCritic', 'calificacion', 'https://opencritic.com'),
                     ('steam', 'Steam', 'tienda', 'https://store.steampowered.com'),
+                    ('epicgames', 'Epic Games Store', 'tienda', 'https://store.epicgames.com'),
+                    ('gog', 'GOG', 'tienda', 'https://www.gog.com'),
+                    ('eneba', 'Eneba', 'tienda', 'https://www.eneba.com'),
+                    ('humble', 'Humble Store', 'tienda', 'https://www.humblebundle.com/store'),
+                    ('gmg', 'Green Man Gaming', 'tienda', 'https://www.greenmangaming.com'),
                     ('metacritic', 'Metacritic', 'calificacion', 'https://www.metacritic.com'),
                     ('gamersgate', 'GamersGate', 'tienda', 'https://www.gamersgate.com')
                 ON CONFLICT(id) DO UPDATE SET
@@ -599,6 +604,11 @@ public sealed class SqliteCatalogRepository
         {
             "opencritic" => ("OpenCritic", "calificacion", "https://opencritic.com"),
             "steam" => ("Steam", "tienda", "https://store.steampowered.com"),
+            "epicgames" => ("Epic Games Store", "tienda", "https://store.epicgames.com"),
+            "gog" => ("GOG", "tienda", "https://www.gog.com"),
+            "eneba" => ("Eneba", "tienda", "https://www.eneba.com"),
+            "humble" => ("Humble Store", "tienda", "https://www.humblebundle.com/store"),
+            "gmg" => ("Green Man Gaming", "tienda", "https://www.greenmangaming.com"),
             "metacritic" => ("Metacritic", "calificacion", "https://www.metacritic.com"),
             "howlongtobeat" => ("How Long To Beat", "duracion", "https://howlongtobeat.com"),
             "gamersgate" => ("GamersGate", "tienda", "https://www.gamersgate.com"),

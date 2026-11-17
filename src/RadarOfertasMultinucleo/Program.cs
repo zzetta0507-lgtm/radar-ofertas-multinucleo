@@ -108,7 +108,11 @@ internal static class App
         var runner = new PipelineRunner(
             options,
             discovery,
-            new StoreAndMetadataDownloadStage(http, options.MatchingThreshold),
+            new StoreAndMetadataDownloadStage(
+                http,
+                options.MatchingThreshold,
+                options.StoreSources,
+                metrics),
             new CatalogSourceParseStage(),
             new TitleMatchingStage(options.MatchingThreshold, options.DealRule, titleCandidates),
             new SqlitePersistStage(repository),

@@ -86,6 +86,11 @@ public sealed class PipelineRunMetrics
     public void RecordHttpRequest(Uri uri, bool successful)
     {
         var site = SiteName(uri.Host);
+        RecordSourceRequest(site, successful);
+    }
+
+    public void RecordSourceRequest(string site, bool successful)
+    {
         _requestsBySite.GetOrAdd(site, _ => new RequestCounter()).Record(successful);
     }
 
@@ -135,6 +140,8 @@ public sealed class PipelineRunMetrics
     {
         if (host.Contains("opencritic", StringComparison.OrdinalIgnoreCase)) return "OpenCritic";
         if (host.Contains("steampowered", StringComparison.OrdinalIgnoreCase)) return "Steam";
+        if (host.Contains("epicgames", StringComparison.OrdinalIgnoreCase)) return "Epic Games Store";
+        if (host.Contains("eneba", StringComparison.OrdinalIgnoreCase)) return "Eneba";
         if (host.Contains("gamersgate", StringComparison.OrdinalIgnoreCase)) return "GamersGate";
         if (host.Contains("cheapshark", StringComparison.OrdinalIgnoreCase)) return "CheapShark";
         if (host.Equals("gog.com", StringComparison.OrdinalIgnoreCase) ||

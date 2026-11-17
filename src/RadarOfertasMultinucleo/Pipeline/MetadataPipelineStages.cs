@@ -17,16 +17,38 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
     private const string SteamSearchUrl = "https://store.steampowered.com/api/storesearch/";
     private const string SteamAppDetailsUrl = "https://store.steampowered.com/api/appdetails";
     private const string GamersGateSearchUrl = "https://www.gamersgate.com/api/games/";
+    private const string EpicPromotionsUrl =
+        "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions?locale=en-US&country=US&allowCountries=US";
+    private const string GogCatalogUrl = "https://catalog.gog.com/v1/catalog";
+    private const string CheapSharkDealsUrl = "https://www.cheapshark.com/api/1.0/deals";
+    private const string CheapSharkStoresUrl = "https://www.cheapshark.com/api/1.0/stores";
+    private const string EnebaSearchUrl = "https://www.eneba.com/store/all?text=";
     private readonly ReplayableHttpClient _http;
     private readonly double _matchingThreshold;
+    private readonly PipelineRunMetrics? _metrics;
+    private readonly HashSet<string> _storeSources;
     private readonly ConcurrentDictionary<string, byte> _reportedFailures = new(StringComparer.Ordinal);
+    private readonly Lazy<Task<DownloadedPage?>> _epicPromotions;
+    private readonly Lazy<Task<IReadOnlyDictionary<string, string>>> _cheapSharkStores;
 
     public StoreAndMetadataDownloadStage(
         ReplayableHttpClient http,
-        double matchingThreshold)
+        double matchingThreshold,
+        IReadOnlyCollection<string>? storeSources = null,
+        PipelineRunMetrics? metrics = null)
     {
         _http = http;
         _matchingThreshold = matchingThreshold;
+        _metrics = metrics;
+        _storeSources = new HashSet<string>(
+            storeSources ?? ["steam", "epicgames", "gog", "eneba", "humble", "gmg", "gamersgate"],
+            StringComparer.OrdinalIgnoreCase);
+        _epicPromotions = new Lazy<Task<DownloadedPage?>>(
+            () => TryGetPageAsync(new Uri(EpicPromotionsUrl), "epicgames", CancellationToken.None),
+            LazyThreadSafetyMode.ExecutionAndPublication);
+        _cheapSharkStores = new Lazy<Task<IReadOnlyDictionary<string, string>>>(
+            () => LoadCheapSharkStoresAsync(CancellationToken.None),
+            LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
     public async Task<IReadOnlyList<SourceResponse>> DownloadAsync(
@@ -57,7 +79,33 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
             }
         }
 
-        var steamListing = await FindSteamListingAsync(game, cancellationToken);
+        var steamTask = _storeSources.Contains("steam")
+            ? FindSteamListingAsync(game, cancellationToken)
+            : Task.FromResult<StoreListingPayload?>(null);
+        var epicTask = _storeSources.Contains("epicgames")
+            ? FindEpicListingAsync(game, cancellationToken)
+            : Task.FromResult<StoreListingPayload?>(null);
+        var gogTask = _storeSources.Contains("gog")
+            ? FindGogListingAsync(game, cancellationToken)
+            : Task.FromResult<StoreListingPayload?>(null);
+        var enebaTask = _storeSources.Contains("eneba")
+            ? FindEnebaListingAsync(game, cancellationToken)
+            : Task.FromResult<StoreListingPayload?>(null);
+        var cheapSharkTask = _storeSources.Contains("humble") || _storeSources.Contains("gmg")
+            ? FindCheapSharkListingsAsync(game, cancellationToken)
+            : Task.FromResult<IReadOnlyList<SourceResponse>>(Array.Empty<SourceResponse>());
+        var gamersGateTask = _storeSources.Contains("gamersgate")
+            ? FindGamersGateListingAsync(game, cancellationToken)
+            : Task.FromResult<StoreListingPayload?>(null);
+        await Task.WhenAll(
+            steamTask,
+            epicTask,
+            gogTask,
+            enebaTask,
+            cheapSharkTask,
+            gamersGateTask);
+
+        var steamListing = await steamTask;
         if (steamListing is not null)
         {
             var body = JsonSerializer.Serialize(steamListing);
@@ -91,7 +139,27 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
             }
         }
 
-        var gamersGateListing = await FindGamersGateListingAsync(game, cancellationToken);
+        var epicListing = await epicTask;
+        if (epicListing is not null)
+        {
+            responses.Add(CreateStoreResponse(game, "epicgames", epicListing));
+        }
+
+        var gogListing = await gogTask;
+        if (gogListing is not null)
+        {
+            responses.Add(CreateStoreResponse(game, "gog", gogListing));
+        }
+
+        var enebaListing = await enebaTask;
+        if (enebaListing is not null)
+        {
+            responses.Add(CreateStoreResponse(game, "eneba", enebaListing));
+        }
+
+        responses.AddRange(await cheapSharkTask);
+
+        var gamersGateListing = await gamersGateTask;
         if (gamersGateListing is not null)
         {
             responses.Add(new SourceResponse(
@@ -109,6 +177,347 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
         }
 
         return responses;
+    }
+
+    private static SourceResponse CreateStoreResponse(
+        GameRecord game,
+        string sourceId,
+        StoreListingPayload listing) =>
+        new(
+            game.Id,
+            sourceId,
+            game.CanonicalTitle,
+            game.Platforms,
+            listing.ProductUrl,
+            "application/json",
+            JsonSerializer.Serialize(listing),
+            listing.RetrievedAt,
+            true,
+            null,
+            game.Msrp);
+
+    private async Task<StoreListingPayload?> FindEpicListingAsync(
+        GameRecord game,
+        CancellationToken cancellationToken)
+    {
+        var page = await _epicPromotions.Value.WaitAsync(cancellationToken);
+        if (page is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(page.Body);
+            var best = FindMatchingProduct(document.RootElement, game.CanonicalTitle)
+                .OrderByDescending(item => item.Score)
+                .FirstOrDefault();
+            if (best.Name is null || best.Score < _matchingThreshold)
+            {
+                return null;
+            }
+
+            var price = FindProperty(best.Item, "totalPrice");
+            var original = GetNumber(price, "originalPrice");
+            var current = GetNumber(price, "discountPrice");
+            var currency = GetString(price, "currencyCode");
+            if (original is not null) original /= 100m;
+            if (current is not null) current /= 100m;
+            current ??= original;
+            var slug = GetString(best.Item, "urlSlug") ??
+                GetString(best.Item, "productSlug") ??
+                GetString(best.Item, "id");
+            var url = slug is null
+                ? null
+                : $"https://store.epicgames.com/en-US/p/" +
+                    string.Join("/", slug.Split('/').Select(Uri.EscapeDataString));
+            return current is null
+                ? null
+                : new StoreListingPayload(
+                    best.Name,
+                    GetString(best.Item, "id") ?? slug ?? best.Name,
+                    current,
+                    original,
+                    currency,
+                    null,
+                    url,
+                    null,
+                    page.RetrievedAt);
+        }
+        catch (JsonException exception)
+        {
+            ReportFailure("epicgames", new Uri(EpicPromotionsUrl), exception.Message);
+            return null;
+        }
+    }
+
+    private async Task<StoreListingPayload?> FindGogListingAsync(
+        GameRecord game,
+        CancellationToken cancellationToken)
+    {
+        var uri = new Uri(
+            $"{GogCatalogUrl}?limit=20&query={Uri.EscapeDataString(game.CanonicalTitle)}" +
+            "&countryCode=US&locale=en-US&currencyCode=USD");
+        var page = await TryGetPageAsync(uri, "gog", cancellationToken);
+        if (page is null) return null;
+
+        try
+        {
+            using var document = JsonDocument.Parse(page.Body);
+            var best = FindMatchingProduct(document.RootElement, game.CanonicalTitle)
+                .OrderByDescending(item => item.Score)
+                .FirstOrDefault();
+            if (best.Name is null || best.Score < _matchingThreshold) return null;
+
+            var price = FindProperty(best.Item, "price");
+            var finalMoney = FindProperty(price, "finalMoney");
+            var baseMoney = FindProperty(price, "baseMoney");
+            var current = GetNumber(finalMoney, "amount") ??
+                ParsePriceText(GetString(price, "final")) ??
+                GetNumber(price, "finalAmount") ??
+                GetNumber(price, "amount");
+            var regular = GetNumber(baseMoney, "amount") ??
+                ParsePriceText(GetString(price, "base")) ??
+                GetNumber(price, "baseAmount") ??
+                GetNumber(price, "basePrice");
+            if (current is null) return null;
+            var path = GetString(best.Item, "storeLink") ??
+                GetString(best.Item, "productCardUrl") ??
+                GetString(best.Item, "url");
+            var productUrl = path is null
+                ? null
+                : new Uri(new Uri("https://www.gog.com"), path).AbsoluteUri;
+            productUrl ??= GetString(best.Item, "slug") is { } slug
+                ? $"https://www.gog.com/en/game/{Uri.EscapeDataString(slug)}"
+                : null;
+            return new StoreListingPayload(
+                best.Name,
+                GetString(best.Item, "id") ?? best.Name,
+                current,
+                regular,
+                GetString(finalMoney, "currency") ?? GetString(baseMoney, "currency") ?? "USD",
+                null,
+                productUrl,
+                GetString(best.Item, "coverHorizontal"),
+                page.RetrievedAt);
+        }
+        catch (JsonException exception)
+        {
+            ReportFailure("gog", uri, exception.Message);
+            return null;
+        }
+    }
+
+    private async Task<StoreListingPayload?> FindEnebaListingAsync(
+        GameRecord game,
+        CancellationToken cancellationToken)
+    {
+        var uri = new Uri(EnebaSearchUrl + Uri.EscapeDataString(game.CanonicalTitle));
+        var page = await TryGetPageAsync(uri, "eneba", cancellationToken);
+        if (page is null) return null;
+
+        var scriptMatches = Regex.Matches(
+            page.Body,
+            """<script\b[^>]*type=["']application/ld\+json["'][^>]*>(?<json>.*?)</script>""",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        foreach (Match script in scriptMatches)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(WebUtility.HtmlDecode(script.Groups["json"].Value));
+                var best = FindMatchingProduct(document.RootElement, game.CanonicalTitle)
+                    .OrderByDescending(item => item.Score)
+                    .FirstOrDefault();
+                if (best.Name is null || best.Score < _matchingThreshold) continue;
+
+                var offers = FindProperty(best.Item, "offers");
+                var current = GetNumber(offers, "price");
+                var url = GetString(best.Item, "url");
+                if (current is null) continue;
+                return new StoreListingPayload(
+                    best.Name,
+                    GetString(best.Item, "sku") ?? best.Name,
+                    current,
+                    GetNumber(offers, "highPrice") ?? current,
+                    GetString(offers, "priceCurrency") ?? "USD",
+                    null,
+                    url,
+                    null,
+                    page.RetrievedAt);
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<IReadOnlyList<SourceResponse>> FindCheapSharkListingsAsync(
+        GameRecord game,
+        CancellationToken cancellationToken)
+    {
+        var uri = new Uri(
+            $"{CheapSharkDealsUrl}?title={Uri.EscapeDataString(game.CanonicalTitle)}&pageSize=20");
+        var page = await TryGetPageAsync(uri, "cheapshark", cancellationToken);
+        if (page is null)
+        {
+            RecordCheapSharkStoreRequests(successful: false);
+            return Array.Empty<SourceResponse>();
+        }
+
+        try
+        {
+            var stores = await _cheapSharkStores.Value.WaitAsync(cancellationToken);
+            RecordCheapSharkStoreRequests(successful: stores.Count > 0);
+            using var document = JsonDocument.Parse(page.Body);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+                return Array.Empty<SourceResponse>();
+
+            var storeById = stores
+                .Where(entry => IsSupportedCheapSharkStore(entry.Value))
+                .ToDictionary(entry => entry.Key, entry => entry.Value);
+            var responses = new List<SourceResponse>();
+            foreach (var deal in document.RootElement.EnumerateArray())
+            {
+                var storeId = GetString(deal, "storeID");
+                var title = GetString(deal, "title");
+                var score = title is null ? 0 : TitleMatchingStage.Similarity(game.CanonicalTitle, title);
+                if (storeId is null || title is null ||
+                    !storeById.TryGetValue(storeId, out var storeName) ||
+                    score < _matchingThreshold)
+                    continue;
+
+                var sourceId = CheapSharkSourceId(storeName);
+                if (!_storeSources.Contains(sourceId)) continue;
+                var listing = new StoreListingPayload(
+                    title,
+                    GetString(deal, "dealID") ?? string.Empty,
+                    ParseDecimal(GetString(deal, "salePrice")),
+                    ParseDecimal(GetString(deal, "normalPrice")),
+                    "USD",
+                    null,
+                    GetString(deal, "dealID") is { } dealId
+                        ? $"https://www.cheapshark.com/redirect?dealID={Uri.EscapeDataString(dealId)}"
+                        : null,
+                    GetString(deal, "thumb"),
+                    page.RetrievedAt);
+                if (listing.CurrentPrice is null) continue;
+                responses.Add(CreateStoreResponse(game, sourceId, listing));
+            }
+
+            return responses;
+        }
+        catch (JsonException exception)
+        {
+            ReportFailure("cheapshark", uri, exception.Message);
+            return Array.Empty<SourceResponse>();
+        }
+    }
+
+    private async Task<IReadOnlyDictionary<string, string>> LoadCheapSharkStoresAsync(
+        CancellationToken cancellationToken)
+    {
+        var page = await TryGetPageAsync(new Uri(CheapSharkStoresUrl), "cheapshark", cancellationToken);
+        if (page is null) return new Dictionary<string, string>();
+        try
+        {
+            using var document = JsonDocument.Parse(page.Body);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+                return new Dictionary<string, string>();
+            return document.RootElement.EnumerateArray()
+                .Select(store => (Id: GetString(store, "storeID"), Name: GetString(store, "storeName")))
+                .Where(store => store.Id is not null && store.Name is not null)
+                .ToDictionary(store => store.Id!, store => store.Name!, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (JsonException exception)
+        {
+            ReportFailure("cheapshark", new Uri(CheapSharkStoresUrl), exception.Message);
+            return new Dictionary<string, string>();
+        }
+    }
+
+    private static bool IsSupportedCheapSharkStore(string name)
+    {
+        var normalized = Regex.Replace(name, "[^a-z0-9]", string.Empty, RegexOptions.IgnoreCase);
+        return normalized.Contains("humble", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("greenmangaming", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("gmg", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void RecordCheapSharkStoreRequests(bool successful)
+    {
+        if (_storeSources.Contains("humble"))
+            _metrics?.RecordSourceRequest("Humble Store", successful);
+        if (_storeSources.Contains("gmg"))
+            _metrics?.RecordSourceRequest("Green Man Gaming", successful);
+    }
+
+    private static string CheapSharkSourceId(string storeName) =>
+        Regex.Replace(storeName, "[^a-z0-9]", string.Empty, RegexOptions.IgnoreCase)
+            .Contains("humble", StringComparison.OrdinalIgnoreCase)
+                ? "humble"
+                : "gmg";
+
+    private static IEnumerable<(JsonElement Item, string? Name, double Score)> FindMatchingProduct(
+        JsonElement element,
+        string title)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            var name = GetString(element, "title") ?? GetString(element, "name");
+            if (name is not null)
+                yield return (element, name, TitleMatchingStage.Similarity(title, name));
+            foreach (var property in element.EnumerateObject())
+            {
+                foreach (var match in FindMatchingProduct(property.Value, title))
+                    yield return match;
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                foreach (var match in FindMatchingProduct(item, title))
+                    yield return match;
+            }
+        }
+    }
+
+    private static JsonElement FindProperty(JsonElement element, string propertyName)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            if (element.TryGetProperty(propertyName, out var property)) return property;
+            foreach (var child in element.EnumerateObject())
+            {
+                var found = FindProperty(child.Value, propertyName);
+                if (found.ValueKind != JsonValueKind.Undefined) return found;
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var child in element.EnumerateArray())
+            {
+                var found = FindProperty(child, propertyName);
+                if (found.ValueKind != JsonValueKind.Undefined) return found;
+            }
+        }
+
+        return default;
+    }
+
+    private static decimal? GetNumber(JsonElement element, string propertyName)
+    {
+        if (element.ValueKind != JsonValueKind.Object ||
+            !element.TryGetProperty(propertyName, out var value)) return null;
+        return value.ValueKind switch
+        {
+            JsonValueKind.Number => value.GetDecimal(),
+            JsonValueKind.String => ParseDecimal(value.GetString()),
+            _ => null
+        };
     }
 
     private async Task<StoreListingPayload?> FindSteamListingAsync(
@@ -412,6 +821,7 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
     }
 
     private static string? GetString(JsonElement element, string propertyName) =>
+        element.ValueKind == JsonValueKind.Object &&
         element.TryGetProperty(propertyName, out var value) &&
         value.ValueKind == JsonValueKind.String
             ? value.GetString()
@@ -1073,10 +1483,20 @@ public sealed class JsonPublishStage : IPublishStage
             }
         }
 
-        var currentPriceSources = _offers
-            .Where(offer => offer.CurrentPrice is not null)
-            .Select(offer => $"{offer.GameId:D}|{offer.SourceId}")
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var metadataById = metadata.ToDictionary(
+            game => game.GameId,
+            StringComparer.OrdinalIgnoreCase);
+        priceHistory = priceHistory.Select(entry =>
+        {
+            var regularPrice = ResolveRegularPrice(entry, metadataById);
+            var discountPercent = CalculateDiscountPercent(entry.CurrentPrice, regularPrice);
+            return entry with
+            {
+                RegularPrice = regularPrice,
+                IsDeal = discountPercent is not null,
+                DiscountPercent = discountPercent
+            };
+        }).ToList();
         var historicalMinimums = priceHistory
             .Where(entry => entry.CurrentPrice is not null)
             .GroupBy(entry => $"{entry.GameId}|{entry.SourceId}", StringComparer.OrdinalIgnoreCase)
@@ -1097,7 +1517,8 @@ public sealed class JsonPublishStage : IPublishStage
                 group => (IReadOnlyList<PersistedOffer>)group.Select(entry =>
                 {
                     var sourceKey = $"{entry.GameId}|{entry.SourceId}";
-                    var isStale = !currentPriceSources.Contains(sourceKey);
+                    var age = DateTimeOffset.UtcNow - entry.CapturedAt;
+                    var isStale = age > TimeSpan.FromHours(24);
                     return new PersistedOffer(
                         entry.ObservationId,
                         Guid.Parse(entry.GameId),
@@ -1108,7 +1529,7 @@ public sealed class JsonPublishStage : IPublishStage
                         entry.RegularPrice,
                         entry.Currency,
                         entry.Format,
-                        entry.IsDeal,
+                        !isStale && entry.IsDeal,
                         entry.DiscountPercent,
                         null,
                         null,
@@ -1208,6 +1629,33 @@ public sealed class JsonPublishStage : IPublishStage
 
     private static string HistoryKey(PriceHistoryEntry entry) =>
         $"{entry.GameId}|{entry.SourceId}|{entry.CapturedAt:O}|{entry.CurrentPrice}";
+
+    private static decimal? ResolveRegularPrice(
+        PriceHistoryEntry entry,
+        IReadOnlyDictionary<string, CatalogGameMetadata> metadataById)
+    {
+        if (entry.RegularPrice is > 0) return entry.RegularPrice;
+        if (!metadataById.TryGetValue(entry.GameId, out var game) ||
+            game.Msrp is not > 0 ||
+            string.IsNullOrWhiteSpace(entry.Currency) ||
+            !string.Equals(entry.Currency, game.Currency, StringComparison.OrdinalIgnoreCase))
+        {
+            return entry.RegularPrice;
+        }
+
+        return game.Msrp;
+    }
+
+    private static decimal? CalculateDiscountPercent(decimal? currentPrice, decimal? regularPrice)
+    {
+        if (currentPrice is null || regularPrice is not > 0 || currentPrice >= regularPrice)
+            return null;
+        var discount = Math.Round(
+            100m * (regularPrice.Value - currentPrice.Value) / regularPrice.Value,
+            2,
+            MidpointRounding.AwayFromZero);
+        return discount > 0 ? discount : null;
+    }
 
     private sealed record CatalogExportEntry(
         string GameId,

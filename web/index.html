@@ -41,6 +41,12 @@
           <small>ÚLTIMA ACTUALIZACIÓN</small>
           <strong id="last-updated">Cargando datos…</strong>
         </span>
+        <div class="currency-switch" role="group" aria-label="Moneda de visualización">
+          <button id="currency-crc" type="button" aria-pressed="true">₡ CRC</button>
+          <span aria-hidden="true">|</span>
+          <button id="currency-usd" type="button" aria-pressed="false">$ USD</button>
+        </div>
+        <button class="refresh-button" id="refresh-button" type="button">Actualizar ahora</button>
       </div>
     </div>
   </header>
@@ -129,7 +135,10 @@
         </div>
         <div class="catalog-toolbar">
           <p id="result-count" aria-live="polite">Cargando catálogo…</p>
-          <div class="view-label"><span class="view-dot"></span> PRECIOS EN CRC CUANDO ESTÉN DISPONIBLES</div>
+          <div class="catalog-toolbar-actions">
+            <button class="quick-filter-button" id="deals-filter" type="button" aria-pressed="false">Solo en oferta</button>
+            <div class="view-label"><span class="view-dot"></span> PRECIOS EN CRC CUANDO ESTÉN DISPONIBLES</div>
+          </div>
         </div>
       </div>
 

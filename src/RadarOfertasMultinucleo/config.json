@@ -11,6 +11,15 @@
   "database_path": "data/radar.db",
   "matching_threshold": 0.85,
   "deal_rule": "combined",
+  "store_sources": [
+    "steam",
+    "epicgames",
+    "gog",
+    "eneba",
+    "humble",
+    "gmg",
+    "gamersgate"
+  ],
   "catalog_min_games": 500,
   "catalog_min_difficult_cases": 50,
   "catalog_max_pages": 5000,

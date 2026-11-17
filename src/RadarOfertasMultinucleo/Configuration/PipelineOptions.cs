@@ -56,6 +56,10 @@ public sealed class PipelineOptions
     [JsonPropertyName("deal_rule")]
     public DealRule DealRule { get; init; } = DealRule.Combined;
 
+    [JsonPropertyName("store_sources")]
+    public string[] StoreSources { get; init; } =
+        ["steam", "epicgames", "gog", "eneba", "humble", "gmg", "gamersgate"];
+
     [JsonPropertyName("catalog_min_games")]
     public int CatalogMinGames { get; init; }
 
@@ -105,6 +109,7 @@ public sealed class PipelineOptions
             DatabasePath = databasePath ?? DatabasePath,
             MatchingThreshold = MatchingThreshold,
             DealRule = DealRule,
+            StoreSources = StoreSources,
             CatalogMinGames = CatalogMinGames,
             CatalogMinDifficultCases = CatalogMinDifficultCases,
             CatalogMaxPages = CatalogMaxPages,
@@ -166,6 +171,11 @@ public sealed class PipelineOptions
         if (string.IsNullOrWhiteSpace(ReplayDirectory) || ContentionOperations < 1)
         {
             throw new ArgumentException("replay_directory y contention_operations deben ser válidos.");
+        }
+
+        if (StoreSources is null || StoreSources.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new ArgumentException("store_sources solo puede contener identificadores válidos.");
         }
     }
 }
