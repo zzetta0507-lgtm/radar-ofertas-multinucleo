@@ -18,8 +18,8 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
     private const string SteamSearchUrl = "https://store.steampowered.com/api/storesearch/";
     private const string SteamAppDetailsUrl = "https://store.steampowered.com/api/appdetails";
     private const string GamersGateSearchUrl = "https://www.gamersgate.com/api/games/";
-    private const string EpicPromotionsUrl =
-        "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions?locale=en-US&country=US&allowCountries=US";
+    private const string EpicCatalogUrl =
+        "https://store-site-backend-static.ak.epicgames.com/api/es-ES/content/products";
     private const string GogCatalogUrl = "https://catalog.gog.com/v1/catalog";
     private const string CheapSharkDealsUrl = "https://www.cheapshark.com/api/1.0/deals";
     private const string CheapSharkStoresUrl = "https://www.cheapshark.com/api/1.0/stores";
@@ -29,7 +29,6 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
     private readonly PipelineRunMetrics? _metrics;
     private readonly HashSet<string> _storeSources;
     private readonly ConcurrentDictionary<string, byte> _reportedFailures = new(StringComparer.Ordinal);
-    private readonly Lazy<Task<DownloadedPage?>> _epicPromotions;
     private readonly Lazy<Task<IReadOnlyDictionary<string, string>>> _cheapSharkStores;
 
     public StoreAndMetadataDownloadStage(
@@ -44,9 +43,6 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
         _storeSources = new HashSet<string>(
             storeSources ?? ["steam", "epicgames", "gog", "eneba", "humble", "gmg", "gamersgate"],
             StringComparer.OrdinalIgnoreCase);
-        _epicPromotions = new Lazy<Task<DownloadedPage?>>(
-            () => TryGetPageAsync(new Uri(EpicPromotionsUrl), "epicgames", CancellationToken.None),
-            LazyThreadSafetyMode.ExecutionAndPublication);
         _cheapSharkStores = new Lazy<Task<IReadOnlyDictionary<string, string>>>(
             () => LoadCheapSharkStoresAsync(CancellationToken.None),
             LazyThreadSafetyMode.ExecutionAndPublication);
@@ -92,7 +88,7 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
         var enebaTask = _storeSources.Contains("eneba")
             ? FindEnebaListingAsync(game, cancellationToken)
             : Task.FromResult<StoreListingPayload?>(null);
-        var cheapSharkTask = _storeSources.Contains("humble") || _storeSources.Contains("gmg")
+        var cheapSharkTask = _storeSources.Any(IsCheapSharkSource)
             ? FindCheapSharkListingsAsync(game, cancellationToken)
             : Task.FromResult<IReadOnlyList<SourceResponse>>(Array.Empty<SourceResponse>());
         var gamersGateTask = _storeSources.Contains("gamersgate")
@@ -201,11 +197,10 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
         GameRecord game,
         CancellationToken cancellationToken)
     {
-        var page = await _epicPromotions.Value.WaitAsync(cancellationToken);
-        if (page is null)
-        {
-            return null;
-        }
+        var uri = new Uri(
+            $"{EpicCatalogUrl}?count=5&country=CR&keywords={Uri.EscapeDataString(game.CanonicalTitle)}&locale=es-ES");
+        var page = await TryGetPageAsync(uri, "epicgames", cancellationToken);
+        if (page is null) return null;
 
         try
         {
@@ -230,7 +225,7 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
                 GetString(best.Item, "id");
             var url = slug is null
                 ? null
-                : $"https://store.epicgames.com/en-US/p/" +
+                : $"https://store.epicgames.com/es-ES/p/" +
                     string.Join("/", slug.Split('/').Select(Uri.EscapeDataString));
             return current is null
                 ? null
@@ -243,11 +238,12 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
                     null,
                     url,
                     null,
-                    page.RetrievedAt);
+                    page.RetrievedAt,
+                    GetNumber(price, "discountPercent") ?? GetNumber(price, "discount"));
         }
         catch (JsonException exception)
         {
-            ReportFailure("epicgames", new Uri(EpicPromotionsUrl), exception.Message);
+            ReportFailure("epicgames", uri, exception.Message);
             return null;
         }
     }
@@ -257,8 +253,8 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
         CancellationToken cancellationToken)
     {
         var uri = new Uri(
-            $"{GogCatalogUrl}?limit=20&query={Uri.EscapeDataString(game.CanonicalTitle)}" +
-            "&countryCode=US&locale=en-US&currencyCode=USD");
+            $"{GogCatalogUrl}?countryCode=CR&currencyCode=USD&limit=5" +
+            $"&query=like%3A{Uri.EscapeDataString(game.CanonicalTitle)}");
         var page = await TryGetPageAsync(uri, "gog", cancellationToken);
         if (page is null) return null;
 
@@ -300,7 +296,8 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
                 null,
                 productUrl,
                 GetString(best.Item, "coverHorizontal"),
-                page.RetrievedAt);
+                page.RetrievedAt,
+                GetNumber(price, "discountPercent"));
         }
         catch (JsonException exception)
         {
@@ -391,7 +388,7 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
                     continue;
 
                 var sourceId = CheapSharkSourceId(storeName);
-                if (!_storeSources.Contains(sourceId)) continue;
+                if (sourceId is null || !_storeSources.Contains(sourceId)) continue;
                 var listing = new StoreListingPayload(
                     title,
                     GetString(deal, "dealID") ?? string.Empty,
@@ -405,7 +402,7 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
                     GetString(deal, "thumb"),
                     page.RetrievedAt);
                 if (listing.CurrentPrice is null) continue;
-                responses.Add(CreateStoreResponse(game, sourceId, listing));
+                responses.Add(CreateStoreResponse(game, $"cheapshark_{sourceId}", listing));
             }
 
             return responses;
@@ -441,25 +438,57 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
 
     private static bool IsSupportedCheapSharkStore(string name)
     {
-        var normalized = Regex.Replace(name, "[^a-z0-9]", string.Empty, RegexOptions.IgnoreCase);
-        return normalized.Contains("humble", StringComparison.OrdinalIgnoreCase) ||
-            normalized.Contains("greenmangaming", StringComparison.OrdinalIgnoreCase) ||
-            normalized.Equals("gmg", StringComparison.OrdinalIgnoreCase);
+        return CheapSharkSourceId(name) is not null;
     }
 
     private void RecordCheapSharkStoreRequests(bool successful)
     {
-        if (_storeSources.Contains("humble"))
-            _metrics?.RecordSourceRequest("Humble Store", successful);
-        if (_storeSources.Contains("gmg"))
-            _metrics?.RecordSourceRequest("Green Man Gaming", successful);
+        foreach (var sourceId in _storeSources.Where(IsCheapSharkSource))
+        {
+            var name = sourceId switch
+            {
+                "epicgames" => "Epic Games Store",
+                "gmg" => "Green Man Gaming",
+                "humble" => "Humble Store",
+                "steam" => "Steam",
+                "gog" => "GOG",
+                "gamersgate" => "GamersGate",
+                "gamebillet" => "GameBillet",
+                "gamesplanet" => "Gamesplanet",
+                "wingamestore" => "WinGameStore",
+                "fanatical" => "Fanatical",
+                "indiegala" => "IndieGala",
+                "eneba" => "Eneba",
+                _ => sourceId
+            };
+            _metrics?.RecordSourceRequest(name, successful);
+        }
     }
 
-    private static string CheapSharkSourceId(string storeName) =>
-        Regex.Replace(storeName, "[^a-z0-9]", string.Empty, RegexOptions.IgnoreCase)
-            .Contains("humble", StringComparison.OrdinalIgnoreCase)
-                ? "humble"
-                : "gmg";
+    private static bool IsCheapSharkSource(string sourceId) => sourceId is
+        "steam" or "epicgames" or "gog" or "gamersgate" or "gamebillet" or
+        "gamesplanet" or "wingamestore" or "fanatical" or "gmg" or "humble" or
+        "indiegala" or "eneba";
+
+    private static string? CheapSharkSourceId(string storeName)
+    {
+        var normalized = Regex.Replace(storeName, "[^a-z0-9]", string.Empty, RegexOptions.IgnoreCase);
+        if (normalized.Contains("greenmangaming", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("gmg", StringComparison.OrdinalIgnoreCase)) return "gmg";
+        if (normalized.Contains("humble", StringComparison.OrdinalIgnoreCase)) return "humble";
+        if (normalized.Contains("steam", StringComparison.OrdinalIgnoreCase)) return "steam";
+        if (normalized.Equals("gog", StringComparison.OrdinalIgnoreCase)) return "gog";
+        if (normalized.Contains("epicgames", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("epic", StringComparison.OrdinalIgnoreCase)) return "epicgames";
+        if (normalized.Contains("gamersgate", StringComparison.OrdinalIgnoreCase)) return "gamersgate";
+        if (normalized.Contains("gamebillet", StringComparison.OrdinalIgnoreCase)) return "gamebillet";
+        if (normalized.Contains("gamesplanet", StringComparison.OrdinalIgnoreCase)) return "gamesplanet";
+        if (normalized.Contains("wingamestore", StringComparison.OrdinalIgnoreCase)) return "wingamestore";
+        if (normalized.Contains("fanatical", StringComparison.OrdinalIgnoreCase)) return "fanatical";
+        if (normalized.Contains("indiegala", StringComparison.OrdinalIgnoreCase)) return "indiegala";
+        if (normalized.Contains("eneba", StringComparison.OrdinalIgnoreCase)) return "eneba";
+        return null;
+    }
 
     private static IEnumerable<(JsonElement Item, string? Name, double Score)> FindMatchingProduct(
         JsonElement element,
@@ -528,96 +557,79 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
         var knownAppId = game.ExternalId.StartsWith("steam:", StringComparison.Ordinal)
             ? game.ExternalId["steam:".Length..]
             : null;
-        var uri = knownAppId is not null
-            ? new Uri($"{SteamAppDetailsUrl}?appids={Uri.EscapeDataString(knownAppId)}&cc=us&l=en")
-            : new Uri(
-                $"{SteamSearchUrl}?term={Uri.EscapeDataString(game.CanonicalTitle)}&l=english&cc=us");
-        var page = await TryGetPageAsync(uri, "steam", cancellationToken);
-        if (page is null)
+        if (knownAppId is null)
         {
-            return null;
+            var searchUri = new Uri(
+                $"{SteamSearchUrl}?term={Uri.EscapeDataString(game.CanonicalTitle)}&l=spanish&cc=cr");
+            var searchPage = await TryGetPageAsync(searchUri, "steam", cancellationToken);
+            if (searchPage is null) return null;
+            try
+            {
+                using var searchDocument = JsonDocument.Parse(searchPage.Body);
+                if (!searchDocument.RootElement.TryGetProperty("items", out var items) ||
+                    items.ValueKind != JsonValueKind.Array)
+                    return null;
+                var match = items.EnumerateArray()
+                    .Where(item => GetString(item, "type")?.Equals("app", StringComparison.OrdinalIgnoreCase) == true)
+                    .Select(item => new
+                    {
+                        Item = item,
+                        Name = GetString(item, "name"),
+                        Score = GetString(item, "name") is { } name
+                            ? TitleMatchingStage.Similarity(game.CanonicalTitle, name)
+                            : 0
+                    })
+                    .Where(item => item.Name is not null && item.Score >= _matchingThreshold)
+                    .OrderByDescending(item => item.Score)
+                    .FirstOrDefault();
+                if (match?.Name is null || !match.Item.TryGetProperty("id", out var id)) return null;
+                knownAppId = id.ToString();
+            }
+            catch (JsonException exception)
+            {
+                ReportFailure("steam", searchUri, exception.Message);
+                return null;
+            }
         }
 
+        var uri = new Uri(
+            $"{SteamAppDetailsUrl}?appids={Uri.EscapeDataString(knownAppId)}&cc=cr&l=spanish");
+        var page = await TryGetPageAsync(uri, "steam", cancellationToken);
+        if (page is null) return null;
         try
         {
             using var document = JsonDocument.Parse(page.Body);
             var root = document.RootElement;
-            if (knownAppId is not null)
-            {
-                if (!root.TryGetProperty(knownAppId, out var app) ||
-                    !app.TryGetProperty("success", out var success) ||
-                    success.ValueKind != JsonValueKind.True ||
-                    !app.TryGetProperty("data", out var data))
-                {
-                    return null;
-                }
-
-                var name = GetString(data, "name");
-                if (name is null ||
-                    TitleMatchingStage.Similarity(
-                        game.CanonicalTitle,
-                        name) < _matchingThreshold)
-                {
-                    return null;
-                }
-
-                var appId = GetString(data, "steam_appid") ?? knownAppId;
-                var price = data.TryGetProperty("price_overview", out var overview)
-                    ? ParseSteamPrice(overview)
-                    : null;
-                var isFree = data.TryGetProperty("is_free", out var free) &&
-                    free.ValueKind == JsonValueKind.True;
-                return CreateSteamPayload(
-                    game,
-                    name,
-                    appId,
-                    price,
-                    isFree,
-                    GetMetacriticScore(data),
-                    GetString(data, "header_image"),
-                    page.RetrievedAt);
-            }
-
-            if (!root.TryGetProperty("items", out var items) ||
-                items.ValueKind != JsonValueKind.Array)
+            if (!root.TryGetProperty(knownAppId, out var app) ||
+                !app.TryGetProperty("success", out var success) ||
+                success.ValueKind != JsonValueKind.True ||
+                !app.TryGetProperty("data", out var data))
             {
                 return null;
             }
 
-            var best = items.EnumerateArray()
-                .Where(item =>
-                    GetString(item, "type")?.Equals("app", StringComparison.OrdinalIgnoreCase) == true)
-                .Select(item => new
-                {
-                    Item = item,
-                    Name = GetString(item, "name"),
-                    Score = GetString(item, "name") is { } name
-                        ? TitleMatchingStage.Similarity(
-                            game.CanonicalTitle,
-                            name)
-                        : 0
-                })
-                .Where(item => item.Name is not null && item.Score >= _matchingThreshold)
-                .OrderByDescending(item => item.Score)
-                .FirstOrDefault();
-            if (best?.Name is null ||
-                !best.Item.TryGetProperty("id", out var idElement))
+            var name = GetString(data, "name");
+            if (name is null ||
+                TitleMatchingStage.Similarity(game.CanonicalTitle, name) < _matchingThreshold)
             {
                 return null;
             }
 
-            var id = idElement.ToString();
-            var itemPrice = best.Item.TryGetProperty("price", out var priceElement)
-                ? ParseSteamPrice(priceElement)
+            var appId = GetString(data, "steam_appid") ?? knownAppId;
+            var price = data.TryGetProperty("price_overview", out var overview)
+                ? ParseSteamPrice(overview)
                 : null;
+            var isFree = data.TryGetProperty("is_free", out var free) &&
+                free.ValueKind == JsonValueKind.True;
             return CreateSteamPayload(
                 game,
-                best.Name,
-                id,
-                itemPrice,
-                false,
-                ParseDecimal(GetString(best.Item, "metascore")),
-                GetString(best.Item, "tiny_image"),
+                name,
+                appId,
+                price,
+                isFree,
+                GetMetacriticScore(data),
+                GetString(data, "header_image"),
+                GetNumber(overview, "discount_percent"),
                 page.RetrievedAt);
         }
         catch (JsonException exception)
@@ -708,6 +720,7 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
         bool isFree,
         decimal? rating,
         string? coverImageUrl,
+        decimal? discountPercent,
         DateTimeOffset retrievedAt)
     {
         var productUrl = $"https://store.steampowered.com/app/{Uri.EscapeDataString(appId)}/";
@@ -720,7 +733,8 @@ public sealed class StoreAndMetadataDownloadStage : IDownloadStage
             rating,
             productUrl,
             coverImageUrl ?? game.CoverImageUrl,
-            retrievedAt);
+            retrievedAt,
+            discountPercent);
     }
 
     private async Task<DownloadedPage?> TryGetPageAsync(
@@ -838,7 +852,25 @@ public sealed record StoreListingPayload(
     decimal? Rating,
     string? ProductUrl,
     string? CoverImageUrl,
-    DateTimeOffset RetrievedAt);
+    DateTimeOffset RetrievedAt,
+    decimal? DiscountPercent = null);
+
+internal static class CatalogOfferRegion
+{
+    public static string? ForSource(string sourceId, string? productUrl = null)
+    {
+        if (sourceId.StartsWith("cheapshark_", StringComparison.OrdinalIgnoreCase) ||
+            sourceId is "gmg" or "humble" ||
+            productUrl?.Contains("cheapshark.com/redirect", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            return "US";
+        }
+
+        return sourceId is "steam" or "epicgames" or "gog" or "gamersgate"
+            ? "CR"
+            : null;
+    }
+}
 
 public sealed class CatalogSourceParseStage : IParseStage
 {
@@ -912,7 +944,8 @@ public sealed class CatalogSourceParseStage : IParseStage
                 null,
                 listing.CoverImageUrl,
                 listing.RetrievedAt,
-                response.RepositoryMsrp));
+                response.RepositoryMsrp,
+                listing.DiscountPercent));
         }
         catch (JsonException exception)
         {
@@ -1188,6 +1221,29 @@ public sealed class TitleMatchingStage : IMatchStage
     private (bool IsDeal, decimal? DiscountPercent) CalculateDeal(ParsedCandidate candidate)
     {
         var currentPrice = candidate.CurrentPrice;
+        if (candidate.SourceId is "steam" or "epicgames" or "gog" or "gamersgate")
+        {
+            var localRegularPrice = candidate.RegularPrice;
+            if (currentPrice is null || localRegularPrice is not > 0 ||
+                localRegularPrice.Value <= currentPrice.Value)
+            {
+                return (false, null);
+            }
+
+            if (candidate.ReportedDiscountPercent is { } reportedLocalDiscount)
+            {
+                return reportedLocalDiscount > 0
+                    ? (true, reportedLocalDiscount)
+                    : (false, null);
+            }
+
+            var localDiscount = Math.Round(
+                100m * (localRegularPrice.Value - currentPrice.Value) / localRegularPrice.Value,
+                2,
+                MidpointRounding.AwayFromZero);
+            return (localDiscount > 0, localDiscount > 0 ? localDiscount : null);
+        }
+
         var referencePrice = _dealRule switch
         {
             DealRule.RepositoryMsrp => candidate.RepositoryMsrp,
@@ -1205,6 +1261,11 @@ public sealed class TitleMatchingStage : IMatchStage
         if (currentPrice is null || referencePrice is null || referencePrice <= 0)
         {
             return (false, null);
+        }
+
+        if (candidate.ReportedDiscountPercent is > 0 && currentPrice < referencePrice)
+        {
+            return (true, candidate.ReportedDiscountPercent);
         }
 
         var discount = Math.Round(
@@ -1369,7 +1430,8 @@ public sealed class SqlitePersistStage : IPersistStage
             candidate.Platforms,
             candidate.RetrievedAt,
             offer.Similarity,
-            offer.IsUncertain);
+            offer.IsUncertain,
+            Region: CatalogOfferRegion.ForSource(candidate.SourceId, candidate.ProductUrl));
     }
 }
 
@@ -1598,7 +1660,8 @@ public sealed class JsonPublishStage : IPublishStage
                         false,
                         !isStale && historicalMinimums[sourceKey] == entry.CurrentPrice,
                         isStale,
-                        isStale ? entry.CapturedAt : null);
+                        isStale ? entry.CapturedAt : null,
+                        CatalogOfferRegion.ForSource(entry.SourceId, entry.ProductUrl));
                 }).ToArray(),
                 StringComparer.OrdinalIgnoreCase);
         var historyByGame = priceHistory
@@ -1798,6 +1861,12 @@ public sealed class JsonPublishStage : IPublishStage
     {
         [JsonPropertyName("sinopsis")]
         public string? Sinopsis => ShortDescription;
+
+        [JsonPropertyName("mejorOferta")]
+        public PersistedOffer? MejorOferta => Offers
+            .Where(offer => offer.Region == "CR" && !offer.IsStale && offer.CurrentPrice is not null)
+            .OrderBy(offer => offer.CurrentPrice)
+            .FirstOrDefault();
 
         [JsonPropertyName("generos")]
         public string Generos => string.Join(", ", Genres ?? Array.Empty<string>());

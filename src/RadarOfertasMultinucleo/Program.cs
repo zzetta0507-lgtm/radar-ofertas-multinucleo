@@ -179,6 +179,10 @@ internal static class App
                 cancellationToken);
             await new JsonPublishStage(repository, seedCatalog)
                 .CompleteAsync(cancellationToken);
+            await new PriceHistorySeedService(repository)
+                .SeedThroughTodayAsync(cancellationToken);
+            await new JsonPublishStage(repository, seedCatalog)
+                .CompleteAsync(cancellationToken);
             WriteEnrichmentSummary(result);
         }
 

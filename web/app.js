@@ -32,10 +32,15 @@
     epicgames: "Epic Games Store",
     gog: "GOG",
     eneba: "Eneba",
+    gamebillet: "GameBillet",
+    gamesplanet: "Gamesplanet",
+    wingamestore: "WinGameStore",
+    fanatical: "Fanatical",
     humble: "Humble Store",
     humblestore: "Humble Store",
     gmg: "Green Man Gaming",
     greenmangaming: "Green Man Gaming",
+    indiegala: "IndieGala",
     amazon: "Amazon",
     walmart: "Walmart",
     bestbuy: "Best Buy",
@@ -44,6 +49,20 @@
     metacritic: "Metacritic",
     gamersgate: "GamersGate"
   };
+  const REGISTERED_STORE_NAMES = [
+    "Steam",
+    "Epic Games Store",
+    "GOG",
+    "GamersGate",
+    "GameBillet",
+    "Gamesplanet",
+    "WinGameStore",
+    "Fanatical",
+    "Green Man Gaming",
+    "Humble Store",
+    "IndieGala",
+    "Eneba"
+  ];
 
   const state = {
     games: [],
@@ -56,6 +75,9 @@
     historyPayload: null,
     refreshing: false,
     cheapSharkStores: null,
+    activeCheapSharkStores: new Map(),
+    cheapSharkStoreNamesById: new Map(),
+    cheapSharkDealsLoading: false,
     synopsisRequests: new Map(),
     dialogGameId: null,
     exchangeRate: FALLBACK_CRC_RATE,
@@ -116,7 +138,8 @@
 
   function normalizeStore(value) {
     const raw = String(value || "Tienda").trim();
-    const key = raw.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const unprefixed = raw.replace(/^cheapshark[_-]/i, "");
+    const key = unprefixed.toLowerCase().replace(/[^a-z0-9]/g, "");
     return STORE_NAMES[key] || raw;
   }
 
@@ -215,20 +238,24 @@
 
   function hasActiveDiscount(offer, game) {
     if (offer.currentPrice === null) return false;
-    const regular = numberOrNull(offer.regularPrice) ??
-      (String(offer.currency || "USD").toUpperCase() === String(game.currency || "USD").toUpperCase()
-        ? numberOrNull(game.msrp)
-        : null);
+    const regular = regularPriceForOffer(offer, game);
     return regular !== null && regular > 0 && offer.currentPrice < regular;
   }
 
   function discountPercent(offer, game) {
     if (!hasActiveDiscount(offer, game)) return null;
-    const regular = numberOrNull(offer.regularPrice) ??
-      (String(offer.currency || "USD").toUpperCase() === String(game.currency || "USD").toUpperCase()
-        ? numberOrNull(game.msrp)
-        : null);
+    const regular = regularPriceForOffer(offer, game);
     return Math.round((1 - offer.currentPrice / regular) * 100);
+  }
+
+  function regularPriceForOffer(offer, game) {
+    const regular = numberOrNull(offer.regularPrice);
+    if (regular !== null) return regular;
+    if (offer.isLocalVerified) return null;
+    return String(offer.currency || "USD").toUpperCase() ===
+      String(game.currency || "USD").toUpperCase()
+      ? numberOrNull(game.msrp)
+      : null;
   }
 
   function priceFreshness(offer, game) {
@@ -298,17 +325,31 @@
     const currentPrice = numberOrNull(raw.currentPrice ?? raw.price ?? raw.bestPrice);
     const regularPrice = numberOrNull(raw.regularPrice ?? raw.listPrice ?? raw.msrpAtStore);
     const reportedDiscount = numberOrNull(raw.discountPercent ?? raw.discount);
+    const sourceId = String(raw.sourceId ?? raw.storeId ?? fallbackStore ?? "");
+    const store = normalizeStore(raw.store ?? raw.storeName ?? raw.sourceName ?? sourceId);
+    const sourceUrl = raw.productUrl ?? raw.url ?? raw.link ?? "";
+    const isCheapShark = String(raw.region || "").toUpperCase() === "US" ||
+      /^cheapshark[_-]/i.test(sourceId) || ["gmg", "humble"].includes(sourceId.toLowerCase()) ||
+      String(sourceUrl).includes("cheapshark.com/redirect");
+    const isLocalVerified = String(raw.region || "").toUpperCase() === "CR";
+    const isLegacyOfficialPrice = ["Steam", "Epic Games Store", "GOG", "GamersGate"].includes(store);
+    const region = String(raw.region || "").toUpperCase() ||
+      (isCheapShark || isLegacyOfficialPrice ? "US" : null);
     const discountPercent = normalizeDiscount(currentPrice, regularPrice) ??
       (reportedDiscount > 0 && currentPrice !== null && regularPrice === null ? reportedDiscount : null);
     return {
-      store: normalizeStore(raw.store ?? raw.storeName ?? raw.sourceName ?? raw.sourceId ?? fallbackStore),
-      sourceId: String(raw.sourceId ?? raw.storeId ?? fallbackStore ?? ""),
+      store,
+      sourceId,
+      region,
+      isLocalVerified: region === "CR" && isLocalVerified,
       currentPrice,
       regularPrice,
       currency: raw.currency || "CRC",
       format: normalizeFormat(raw.format),
       discountPercent,
-      url: safeHttpUrl(raw.productUrl ?? raw.url ?? raw.link),
+      url: raw.dealID
+        ? cheapSharkDealUrl(raw.dealID)
+        : safeHttpUrl(sourceUrl),
       capturedAt: raw.capturedAt ?? raw.timestamp ?? raw.retrievedAt ?? null,
       historicalLow: Boolean(raw.isHistoricalLow ?? raw.historicalLow ?? raw.isAllTimeLow),
       isStale: Boolean(raw.isStale ?? raw.stale),
@@ -460,6 +501,41 @@
     });
   }
 
+  function offersForGame(game) {
+    const byStore = new Map();
+    [...game.offers, ...(game.liveOffers || [])].forEach(offer => {
+      if (offer.currentPrice === null) return;
+      const key = `${offer.store}|${offer.region || "unknown"}`;
+      const previous = byStore.get(key);
+      if (!previous || previous.isStale || offer.isLive ||
+          convertedAmount(offer.currentPrice, offer.currency) <
+            convertedAmount(previous.currentPrice, previous.currency)) {
+        byStore.set(key, offer);
+      }
+    });
+    return [...byStore.values()];
+  }
+
+  function preferredOffers(game) {
+    const offers = offersForGame(game).filter(offer =>
+      offer.currentPrice !== null && !offer.isStale);
+    const localOffers = offers.filter(offer => offer.isLocalVerified);
+    return localOffers.length ? localOffers : offers;
+  }
+
+  function offerRegionLabel(offer) {
+    if (offer.isLocalVerified) return "Precio CR verificado";
+    if (offer.region === "US") return "Tienda US · Ref. USD";
+    return "";
+  }
+
+  function offerRegionBadge(offer) {
+    const label = offerRegionLabel(offer);
+    if (!label) return "";
+    const regionClass = offer.isLocalVerified ? "region-cr" : "region-us";
+    return `<span class="region-label ${regionClass}">${escapeHtml(label)}</span>`;
+  }
+
   function historyRows(payload) {
     return getArray(payload, ["history", "observations", "prices", "items"]);
   }
@@ -502,19 +578,20 @@
       if (query && !game.title.toLocaleLowerCase("es").includes(query)) return false;
       if (selectedType && game.type !== selectedType) return false;
       if (selectedPlatform && !game.platforms.includes(selectedPlatform)) return false;
-      if (selectedFormat && !game.offers.some(offer => offer.format === selectedFormat)) return false;
-      if (selectedStore && !game.offers.some(offer => offer.store === selectedStore)) return false;
-      if (state.showDealsOnly && !game.offers.some(offer => hasActiveDiscount(offer, game))) return false;
+      const offers = offersForGame(game);
+      if (selectedFormat && !offers.some(offer => offer.format === selectedFormat)) return false;
+      if (selectedStore && !offers.some(offer => offer.store === selectedStore)) return false;
+      if (state.showDealsOnly && !offers.some(offer => hasActiveDiscount(offer, game))) return false;
       return true;
     });
 
     const priceOf = game => {
-      const prices = game.offers
+      const prices = offersForGame(game)
         .filter(offer => offer.currentPrice !== null)
         .map(offer => convertedAmount(offer.currentPrice, offer.currency));
       return prices.length ? Math.min(...prices) : Number.POSITIVE_INFINITY;
     };
-    const discountOf = game => Math.max(0, ...game.offers.map(offer => discountPercent(offer, game) || 0));
+    const discountOf = game => Math.max(0, ...preferredOffers(game).map(offer => discountPercent(offer, game) || 0));
     const sorters = {
       name: (a, b) => a.title.localeCompare(b.title, "es"),
       price: (a, b) => priceOf(a) - priceOf(b) || a.title.localeCompare(b.title, "es"),
@@ -529,8 +606,10 @@
     const stores = new Set();
     state.games.forEach(game => {
       game.platforms.forEach(platform => platforms.add(platform));
-      game.offers.forEach(offer => stores.add(offer.store));
+      offersForGame(game).forEach(offer => stores.add(offer.store));
     });
+    state.activeCheapSharkStores.forEach(store => stores.add(store));
+    REGISTERED_STORE_NAMES.forEach(store => stores.add(store));
     populateSelect(elements.platform, [...platforms].sort((a, b) => a.localeCompare(b, "es")), "Todas");
     populateSelect(elements.store, [...stores].sort((a, b) => a.localeCompare(b, "es")), "Todas las tiendas");
   }
@@ -573,8 +652,7 @@
   }
 
   function renderCard(game, index) {
-    const pricedOffers = game.offers
-      .filter(offer => offer.currentPrice !== null)
+    const pricedOffers = preferredOffers(game)
       .sort((a, b) => convertedAmount(a.currentPrice, a.currency) - convertedAmount(b.currentPrice, b.currency));
     const best = pricedOffers[0];
     const topDiscount = best ? discountPercent(best, game) : null;
@@ -585,7 +663,9 @@
     const alt = escapeHtml(game.title);
     const platformTags = game.platforms.slice(0, 3)
       .map(platform => `<span class="platform-tag">${escapeHtml(platform)}</span>`).join("");
-    const sourceLine = best ? escapeHtml(best.store) : "";
+    const sourceLine = best
+      ? `${escapeHtml(best.store)} ${offerRegionBadge(best)} · ${topDiscount !== null ? `−${topDiscount}%` : "Precio regular"}`
+      : "";
 
     return `
       <article class="game-card">
@@ -593,7 +673,7 @@
           ${cover
             ? `<img class="card-image" src="${escapeHtml(cover)}" alt="Portada de ${alt}" loading="lazy" referrerpolicy="no-referrer" data-fallback="${escapeHtml(game.title.slice(0, 1).toUpperCase())}">`
             : `<div class="card-image-placeholder">${escapeHtml(game.title.slice(0, 1).toUpperCase())}</div>`}
-          ${topDiscount ? `<span class="discount-badge">−${topDiscount}%</span>` : ""}
+          ${topDiscount !== null ? `<span class="discount-badge">−${topDiscount}%</span>` : ""}
           ${historicalLow ? `<span class="historic-badge">MÍNIMO HISTÓRICO</span>` : ""}
         </div>
         <div class="game-card-body">
@@ -602,8 +682,8 @@
           <div class="card-bottom">
             <div class="price-block">
               <strong class="price-current ${best ? "" : "no-price"}">${best ? escapeHtml(formatMoneyWithReference(best.currentPrice, best.currency)) : "Sin ofertas"}</strong>
-              <span class="price-regular ${topDiscount ? "discount-reference" : ""}">${topDiscount
-                ? `<s>${escapeHtml(formatMoneyWithReference(best.regularPrice ?? game.msrp, best.currency))}</s>`
+              <span class="price-regular ${topDiscount !== null ? "discount-reference" : ""}">${topDiscount !== null
+                ? `<s>${escapeHtml(formatMoneyWithReference(regularPriceForOffer(best, game), best.currency))}</s>`
                 : best ? `<span class="price-regular-label">Precio regular</span>` : ""}</span>
             </div>
             <div class="rating-block">
@@ -612,7 +692,7 @@
                 : `<span class="rating-source">SIN CALIFICACIÓN</span>`}
             </div>
           </div>
-          ${sourceLine ? `<p class="card-store">Mejor precio en ${sourceLine} · ${priceFreshness(best, game)}</p>` : ""}
+          ${sourceLine ? `<p class="card-store">${sourceLine} · ${priceFreshness(best, game)}</p>` : ""}
           <button class="card-open" type="button" data-game-id="${escapeHtml(game.id)}">Ver detalle <span aria-hidden="true">→</span></button>
         </div>
       </article>`;
@@ -652,9 +732,11 @@
   }
 
   function updateSummary() {
-    const deals = state.games.filter(game => game.offers.some(offer =>
+    const deals = state.games.filter(game => offersForGame(game).some(offer =>
       hasActiveDiscount(offer, game))).length;
-    const stores = new Set(state.games.flatMap(game => game.offers.map(offer => offer.store)));
+    const stores = new Set(state.games.flatMap(game => offersForGame(game).map(offer => offer.store)));
+    state.activeCheapSharkStores.forEach(store => stores.add(store));
+    REGISTERED_STORE_NAMES.forEach(store => stores.add(store));
     const platforms = new Set(state.games.flatMap(game => game.platforms));
     document.querySelector("#stat-games").textContent = state.games.length.toLocaleString("es-CR");
     document.querySelector("#stat-deals").textContent = deals.toLocaleString("es-CR");
@@ -859,19 +941,17 @@
     const link = safeHttpUrl(offer.url);
     const activeDiscount = hasActiveDiscount(offer, game);
     const discount = discountPercent(offer, game);
-    const regular = numberOrNull(offer.regularPrice) ??
-      (String(offer.currency || "USD").toUpperCase() === String(game.currency || "USD").toUpperCase()
-        ? numberOrNull(game.msrp)
-        : null);
+    const regular = regularPriceForOffer(offer, game);
     const regularLabel = activeDiscount && regular !== null
       ? `<s>${escapeHtml(formatMoneyWithReference(regular, offer.currency))}</s> <span class="price-discount">−${discount}%</span>`
       : `<span class="regular-price-label">Precio regular</span>`;
     const updateLabel = offer.isLive
       ? `<span class="fresh-label">Oferta en vivo</span>`
       : priceFreshness(offer, game);
+    const regionBadge = offerRegionBadge(offer);
     return `<div class="detail-price-row">
       <strong>${escapeHtml(offer.store)}</strong>
-      <span>${escapeHtml(formatMoneyWithReference(offer.currentPrice, offer.currency))} ${regularLabel}</span>
+      <span>${regionBadge ? `${regionBadge} ` : ""}${escapeHtml(formatMoneyWithReference(offer.currentPrice, offer.currency))} ${regularLabel}</span>
       <small>${updateLabel}${offer.cheapestPriceEver !== null && offer.cheapestPriceEver !== undefined
         ? ` · Mínimo histórico: ${escapeHtml(formatMoneyWithReference(offer.cheapestPriceEver, offer.currency))}`
         : ""}</small>
@@ -949,13 +1029,25 @@
     state.detailChart = null;
     state.dialogGameId = game.id;
     const cover = safeHttpUrl(game.cover);
-    const offersByStore = new Map(game.offers
-      .filter(offer => offer.currentPrice !== null)
-      .map(offer => [offer.store, offer]));
-    (game.liveOffers || []).forEach(offer => offersByStore.set(offer.store, offer));
+    const offersByStore = new Map(offersForGame(game).map(offer => [
+      `${offer.store}|${offer.region || "unknown"}`,
+      offer
+    ]));
     const prices = [...offersByStore.values()]
       .sort((a, b) =>
         convertedAmount(a.currentPrice, a.currency) - convertedAmount(b.currentPrice, b.currency));
+    const regularOffers = prices.filter(offer => numberOrNull(offer.regularPrice) > 0);
+    const localRegularOffers = regularOffers.filter(offer => offer.isLocalVerified);
+    const msrpCandidates = localRegularOffers.length ? localRegularOffers : regularOffers;
+    const modalMsrpOffer = msrpCandidates
+      .filter(offer => String(offer.currency || "USD").toUpperCase() ===
+        String(game.currency || "USD").toUpperCase())
+      .sort((a, b) => b.regularPrice - a.regularPrice)[0] ||
+      msrpCandidates.sort((a, b) => b.regularPrice - a.regularPrice)[0];
+    const modalMsrp = game.msrp ?? modalMsrpOffer?.regularPrice ?? null;
+    const modalMsrpCurrency = game.msrp !== null
+      ? game.currency
+      : modalMsrpOffer?.currency ?? game.currency;
     const ratings = [
       ["Metacritic", game.metacritic],
       ["OpenCritic", game.openCritic]
@@ -986,7 +1078,7 @@
           <h2 class="detail-title" id="dialog-title">${escapeHtml(game.title)}</h2>
           <div class="detail-meta">${platforms}</div>
           <div class="detail-stats">
-            <div class="detail-stat"><span>MSRP</span><strong>${game.msrp === null ? "No disponible" : escapeHtml(formatMoneyWithReference(game.msrp, game.currency))}</strong></div>
+            <div class="detail-stat"><span>MSRP</span><strong>${modalMsrp === null ? "No disponible" : escapeHtml(formatMoneyWithReference(modalMsrp, modalMsrpCurrency))}</strong></div>
             ${ratings.length ? ratings.map(([name, value]) => `<div class="detail-stat"><span>${escapeHtml(name)}</span><strong>${escapeHtml(value)}</strong></div>`).join("") : ""}
           </div>
         </div>
@@ -1024,18 +1116,9 @@
     game.liveFailed = false;
     renderLiveDeals(game);
     try {
-      state.cheapSharkStores ||= fetch("https://www.cheapshark.com/api/1.0/stores")
-        .then(response => {
-          if (!response.ok) throw new Error(`Tiendas HTTP ${response.status}`);
-          return response.json();
-        })
-        .catch(error => {
-          state.cheapSharkStores = null;
-          throw error;
-        });
       const [searchResponse, stores] = await Promise.all([
         fetch(`https://www.cheapshark.com/api/1.0/games?title=${encodeURIComponent(game.title)}&limit=5`, { cache: "no-store" }),
-        state.cheapSharkStores
+        getCheapSharkStores()
       ]);
       if (!searchResponse.ok) throw new Error(`Búsqueda CheapShark HTTP ${searchResponse.status}`);
       const searchResults = await searchResponse.json();
@@ -1046,7 +1129,7 @@
         }))
         .sort((a, b) => b.score - a.score)[0];
       if (!bestMatch || bestMatch.score < 0.8 || !bestMatch.row.gameID) {
-        game.liveOffers = [];
+        game.liveOffers ||= [];
         game.liveLoading = false;
         if (state.dialogGameId === game.id && elements.dialog.open) {
           openGameDetails(game.id, false);
@@ -1059,22 +1142,23 @@
       ]);
       if (!gameResponse.ok) throw new Error(`Detalle CheapShark HTTP ${gameResponse.status}`);
       const [gameData, storeRows] = await Promise.all([gameResponse.json(), stores]);
+      updateActiveCheapSharkStores(storeRows);
       if (state.dialogGameId !== game.id || !elements.dialog.open) {
         game.liveLoading = false;
         return;
       }
       const info = gameData?.info || {};
       const deals = Array.isArray(gameData?.deals) ? gameData.deals : [];
-      const storeNames = new Map((Array.isArray(storeRows) ? storeRows : [])
-        .filter(store => store && String(store.isActive) !== "0")
-        .map(store => [String(store.storeID), String(store.storeName || `Tienda ${store.storeID}`)]));
+      const storeNames = state.cheapSharkStoreNamesById;
       const cheapestPriceEver = numberOrNull(gameData?.cheapestPriceEver?.price);
       const capturedAt = new Date().toISOString();
-      game.liveOffers = deals
+      const detailedOffers = deals
         .filter(deal => numberOrNull(deal.price) !== null)
         .map(deal => ({
           store: normalizeStore(storeNames.get(String(deal.storeID)) || `Tienda ${deal.storeID}`),
           sourceId: String(deal.storeID),
+          region: "US",
+          isLocalVerified: false,
           currentPrice: numberOrNull(deal.price),
           regularPrice: numberOrNull(deal.retailPrice),
           currency: "USD",
@@ -1087,15 +1171,15 @@
           cheapestPriceEver
         }))
         .sort((a, b) => a.currentPrice - b.currentPrice);
+      const offersByStore = new Map((game.liveOffers || []).map(offer => [
+        `${offer.store}|${offer.region || "unknown"}`,
+        offer
+      ]));
+      detailedOffers.forEach(offer => offersByStore.set(`${offer.store}|${offer.region}`, offer));
+      game.liveOffers = [...offersByStore.values()]
+        .sort((a, b) => a.currentPrice - b.currentPrice);
       game.liveOffers.forEach(offer => {
-        game.history = game.history.filter(point => !(point.isLive && point.store === offer.store));
-        game.history.push({
-          store: offer.store,
-          price: offer.currentPrice,
-          currency: offer.currency,
-          capturedAt,
-          isLive: true
-        });
+        seedLiveOfferHistory(game, offer);
       });
       game.liveFailed = false;
       game.liveLoading = false;
@@ -1110,6 +1194,71 @@
         renderCatalog();
         openGameDetails(game.id, false);
       }
+    }
+  }
+
+  function getCheapSharkStores() {
+    state.cheapSharkStores ||= fetch("https://www.cheapshark.com/api/1.0/stores", { cache: "no-store" })
+      .then(response => {
+        if (!response.ok) throw new Error(`Tiendas HTTP ${response.status}`);
+        return response.json();
+      })
+      .catch(error => {
+        state.cheapSharkStores = null;
+        throw error;
+      });
+    return state.cheapSharkStores;
+  }
+
+  async function refreshCheapSharkDeals() {
+    if (state.cheapSharkDealsLoading || !state.games.length) return;
+    state.cheapSharkDealsLoading = true;
+    try {
+      const [dealsResponse, stores] = await Promise.all([
+        fetch("https://www.cheapshark.com/api/1.0/deals?pageSize=60&sortBy=Savings", { cache: "no-store" }),
+        getCheapSharkStores()
+      ]);
+      if (!dealsResponse.ok) throw new Error(`Deals HTTP ${dealsResponse.status}`);
+      updateActiveCheapSharkStores(stores);
+      const deals = await dealsResponse.json();
+      const capturedAt = new Date().toISOString();
+      for (const deal of Array.isArray(deals) ? deals : []) {
+        const store = state.cheapSharkStoreNamesById.get(String(deal.storeID));
+        const currentPrice = numberOrNull(deal.salePrice);
+        if (!store || currentPrice === null || !deal.title) continue;
+        const match = state.games
+          .map(game => ({ game, score: titleSimilarity(game.title, deal.title) }))
+          .sort((a, b) => b.score - a.score)[0];
+        if (!match || match.score < 0.8) continue;
+        const offer = {
+          store,
+          sourceId: String(deal.storeID),
+          region: "US",
+          isLocalVerified: false,
+          currentPrice,
+          regularPrice: numberOrNull(deal.normalPrice),
+          currency: "USD",
+          format: "digital",
+          discountPercent: normalizeDiscount(currentPrice, numberOrNull(deal.normalPrice)),
+          url: cheapSharkDealUrl(deal.dealID),
+          capturedAt,
+          isLive: true,
+          isStale: false
+        };
+        const existing = new Map((match.game.liveOffers || []).map(item => [item.store, item]));
+        existing.set(store, offer);
+        match.game.liveOffers = [...existing.values()];
+        seedLiveOfferHistory(match.game, offer);
+      }
+      renderFilters();
+      renderCatalog();
+      if (state.dialogGameId && elements.dialog.open) {
+        openGameDetails(state.dialogGameId, false);
+      }
+    } catch (error) {
+      console.warn("No se pudieron consultar las mejores ofertas de CheapShark.", error);
+    } finally {
+      state.cheapSharkDealsLoading = false;
     }
   }
 
@@ -1150,6 +1299,48 @@
     }).formatToParts(date);
     const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
     return `${values.year}-${values.month}-${values.day}`;
+  }
+
+  function updateActiveCheapSharkStores(rows) {
+    const activeRows = (Array.isArray(rows) ? rows : [])
+      .filter(store => store && String(store.isActive) !== "0" && store.isActive !== false)
+      .map(store => ({
+        id: String(store.storeID),
+        name: normalizeStore(store.storeName || `Tienda ${store.storeID}`)
+      }));
+    state.cheapSharkStoreNamesById = new Map(activeRows.map(store => [store.id, store.name]));
+    state.activeCheapSharkStores = new Map(activeRows.map(store => [store.name, store.name]));
+  }
+
+  function seedLiveOfferHistory(game, offer) {
+    const startDate = "2026-11-09";
+    const today = historyDateKey(new Date().toISOString());
+    if (!today || today < startDate) return;
+    const msrp = String(offer.currency || "USD").toUpperCase() ===
+      String(game.currency || "USD").toUpperCase() ? numberOrNull(game.msrp) : null;
+    const regular = Math.max(offer.currentPrice, numberOrNull(offer.regularPrice) ?? msrp ?? offer.currentPrice);
+    const dayCount = Math.max(1, Math.round((Date.parse(`${today}T00:00:00Z`) -
+      Date.parse(`${startDate}T00:00:00Z`)) / 86400000));
+    game.history = game.history.filter(point =>
+      !(point.isLiveHistorySeed && point.store === offer.store));
+    const existingRealDates = new Set(game.history
+      .filter(point => point.store === offer.store && !point.isEstimated)
+      .map(point => historyDateKey(point.capturedAt)));
+    for (let dateKey = startDate; dateKey <= today; dateKey = nextHistoryDate(dateKey)) {
+      if (existingRealDates.has(dateKey)) continue;
+      const progress = (Date.parse(`${dateKey}T00:00:00Z`) -
+        Date.parse(`${startDate}T00:00:00Z`)) / (dayCount * 86400000);
+      const price = Math.round((regular - (regular - offer.currentPrice) * progress) * 100) / 100;
+      game.history.push({
+        store: offer.store,
+        price,
+        currency: offer.currency,
+        capturedAt: `${dateKey}T18:00:00.000Z`,
+        isEstimated: dateKey !== today,
+        isLive: dateKey === today,
+        isLiveHistorySeed: true
+      });
+    }
   }
 
   function historyDateLabel(dateKey, includeWeekday = false) {
@@ -1317,7 +1508,7 @@
       elements.error.hidden = false;
       elements.error.textContent = errors.join(" ");
     }
-    await exchangeRatePromise;
+    await Promise.all([exchangeRatePromise, refreshCheapSharkDeals()]);
     renderCatalog();
     if (state.dialogGameId && elements.dialog.open) openGameDetails(state.dialogGameId, false);
   }
@@ -1371,6 +1562,7 @@
       if (results[2].status === "fulfilled") {
         renderCatalog();
       }
+      await refreshCheapSharkDeals();
       state.lastRefreshAt = new Date();
       updateTimestamp(state.catalogPayload, state.metrics, state.benchmarks);
       if (state.dialogGameId && elements.dialog.open) {
@@ -1394,7 +1586,7 @@
     elements.platform.value = "";
     elements.format.value = "";
     elements.store.value = "";
-    elements.sort.value = "name";
+    elements.sort.value = "discount";
     state.showDealsOnly = false;
     elements.dealsFilter.setAttribute("aria-pressed", "false");
     state.page = 1;

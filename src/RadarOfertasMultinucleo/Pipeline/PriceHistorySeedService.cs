@@ -198,9 +198,9 @@ public sealed class PriceHistorySeedService
                 : null;
             var regularPrice = Math.Max(
                 latest.CurrentPrice!.Value,
-                Math.Max(lastRegular ?? 0m, msrp ?? 0m));
+                lastRegular ?? msrp ?? 0m);
             if (regularPrice <= 0) regularPrice = latest.CurrentPrice.Value;
-            var minimumPrice = actual.Min(entry => entry.CurrentPrice!.Value);
+            var currentPrice = latest.CurrentPrice.Value;
             var existingDates = pair
                 .Select(entry => CostaRicaDate(entry.CapturedAt))
                 .ToHashSet();
@@ -230,7 +230,7 @@ public sealed class PriceHistorySeedService
                         0m,
                         1m);
                     price = Math.Round(
-                        regularPrice - ((regularPrice - minimumPrice) * progress),
+                        regularPrice - ((regularPrice - currentPrice) * progress),
                         2,
                         MidpointRounding.AwayFromZero);
                 }

@@ -204,6 +204,9 @@ kbd { display: grid; width: 19px; height: 20px; place-items: center; border: 1px
 .price-regular-label, .money-reference { color: var(--subtle); font-size: 9px; text-decoration: none; }
 .money-display { display: inline-flex; align-items: baseline; flex-wrap: wrap; gap: 4px 7px; }
 .detail-price-row .price-discount { display: inline-block; padding: 3px 5px; border-radius: 4px; background: rgba(200, 241, 105, .12); color: var(--lime); font-size: 10px; font-weight: 700; }
+.region-label { display: inline-block; padding: 3px 6px; border: 1px solid currentColor; border-radius: 4px; font-size: 9px; font-weight: 700; line-height: 1.2; vertical-align: middle; }
+.region-cr { color: var(--green); background: rgba(139, 224, 164, .08); }
+.region-us { color: var(--orange); background: rgba(255, 154, 102, .08); }
 .detail-price-row .regular-price-label { color: var(--subtle); font-size: 10px; }
 .fresh-label { color: var(--green) !important; }
 .rating-block { display: grid; justify-items: end; gap: 4px; }

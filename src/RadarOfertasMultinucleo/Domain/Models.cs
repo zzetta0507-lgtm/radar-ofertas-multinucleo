@@ -61,7 +61,8 @@ public sealed record ParsedCandidate(
     int? CompletionistMinutes,
     string? CoverImageUrl,
     DateTimeOffset RetrievedAt,
-    decimal? RepositoryMsrp = null);
+    decimal? RepositoryMsrp = null,
+    decimal? ReportedDiscountPercent = null);
 
 public sealed record MatchedOffer(
     Guid GameId,
@@ -92,7 +93,8 @@ public sealed record PersistedOffer(
     bool IsUncertainMatch,
     bool IsHistoricalLow = false,
     bool IsStale = false,
-    DateTimeOffset? StaleSince = null);
+    DateTimeOffset? StaleSince = null,
+    string? Region = null);
 
 public sealed record CatalogGameMetadata(
     string GameId,
