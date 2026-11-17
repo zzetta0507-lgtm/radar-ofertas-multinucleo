@@ -21,10 +21,17 @@ Este documento registra cambios de diseño y distingue decisiones implementadas 
 - El benchmark requiere replay y exporta mediciones observadas. No se agregan predicciones numéricas teóricas al Hito 1.
 - Las decisiones de sincronización, backpressure, persistencia y emparejamiento están detalladas en [los ADR](./adr/).
 
-## Funcionalidad pendiente respecto al diseño de producto
+## Integraciones de tiendas y actualización automática
 
-- El pipeline consulta precios digitales de Steam y GamersGate; usa las calificaciones de OpenCritic y el metascore de Steam como dato de Metacritic. Las observaciones de precio se guardan en SQLite sin sobrescribir el historial y se exportan a `web/data/history.json`.
-- Si una tienda no responde, se conserva su última observación conocida y se publica como desactualizada con la fecha de captura. GitHub Actions conserva además la publicación anterior si falla la ejecución completa.
+- `store_sources` en `config.json` habilita Steam, Epic Games Store, GOG, Eneba, Humble Store y Green Man Gaming, además de GamersGate. Steam usa sus APIs de tienda/búsqueda; Epic, su API pública de promociones; GOG, `catalog.gog.com`; Eneba, búsqueda pública y datos JSON-LD cuando están disponibles; CheapShark aporta precios de Humble y Green Man Gaming con sus IDs resueltos mediante `/stores`.
+- Las solicitudes usan `ReplayableHttpClient`, que aplica el `User-Agent`, verifica `robots.txt` y limita concurrencia/cadencia con `SemaphoreSlim` por dominio. `metrics.json` desglosa las solicitudes directas por fuente y atribuye las búsquedas de CheapShark a Humble Store y Green Man Gaming.
+- Las observaciones se insertan en SQLite sin sobrescribir historial y se exportan con enlaces por tienda a `web/data/catalog.json` y `web/data/history.json`. Si una fuente falla o no aporta un precio nuevo, se conserva su observación anterior y se marca `isStale`/`staleSince`; una falla parcial no elimina otros datos.
+- GitHub Actions ejecuta la actualización cada 15 minutos, rebasea antes de publicar y despliega la web. La página recarga catálogo y métricas cada 30 segundos sin navegar de nuevo; el detalle intenta consultar ofertas recientes de CheapShark y conserva Eneba y otras observaciones publicadas como respaldo.
+- La interfaz convierte USD a CRC con la tasa actual de Open ER-API (510 CRC/USD como respaldo), muestra ambas monedas y permite alternar a USD también en el gráfico. Solo presenta tachado y porcentaje cuando hay rebaja real; los datos se etiquetan como actuales hasta cumplir 24 horas, salvo fallo de la consulta en vivo.
+
+## Funcionalidad todavía pendiente
+
+- Se usan las calificaciones de OpenCritic y el metascore de Steam como dato de Metacritic.
 - How Long To Beat no se consulta automáticamente: la extracción/API no está autorizada para este proyecto según las restricciones verificadas del servicio. Se requiere permiso o un proveedor/dataset autorizado antes de agregar ese conector; por ahora los tiempos pueden permanecer vacíos.
 - `deal_rule` calcula `IsDeal` y el descuento usando el MSRP, el precio regular de tienda o el criterio combinado configurado. El mínimo histórico se determina a partir de las observaciones guardadas. Ver [ADR 004](./adr/004-definicion-oferta.md).
 - La interfaz tolera la ausencia de archivos de métricas y muestra estados vacíos; no se deben interpretar esos estados como mediciones iguales a cero.

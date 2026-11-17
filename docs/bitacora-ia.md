@@ -18,6 +18,13 @@
 - `--run-benchmarks` solo acepta `--source replay`. Ejecuta cinco repeticiones de la línea base, los barridos configurados de E/S y las potencias de dos hasta el número de procesadores lógicos, más el doble; exporta medianas, mínimos, máximos, speedups, eficiencia y Karp–Flatt observados a JSON/CSV. Cada repetición crea un cliente replay nuevo y una base SQLite temporal aislada para no reutilizar caché en memoria ni acumular historial entre medidas; los tiempos incluyen persistencia.
 - GitHub Actions configura .NET 8, ejecuta el modo paralelo, hace commit de los cambios en `web/data/` cuando existen y publica la carpeta `web/` en Pages.
 
+## Actualización automática y tiendas adicionales
+
+- Se agregaron fuentes de precios de Steam, Epic Games Store, GOG, Eneba y CheapShark; los IDs de tiendas de CheapShark se traducen a Humble Store y Green Man Gaming. Los datos se normalizan en observaciones SQLite y se publican junto con enlaces e historial.
+- Las llamadas usan el cliente HTTP existente, que verifica `robots.txt`, identifica el `User-Agent` y regula solicitudes concurrentes por dominio. La métrica de solicitudes distingue las fuentes directas y las consultas de CheapShark atribuidas a Humble y GMG.
+- Ante una falla o ausencia temporal de precio, la publicación conserva la observación previa y señala la fecha en `isStale`/`staleSince`.
+- El workflow programa ejecuciones cada 15 minutos y rebasea los cambios de datos antes de hacer push. La web consulta catálogo y métricas cada 30 segundos; el detalle consulta CheapShark en segundo plano y mantiene los precios publicados como respaldo.
+
 ## Caso real - integridad referencial en persistencia concurrente
 
 - Durante una ejecución de prueba con `--mode concurrent --record-replay`, la Etapa 4 falló al insertar una calificación con `SQLite Error 19: FOREIGN KEY constraint failed`. El emparejador podía elegir un candidato obtenido del sitemap cuyo registro aún no había sido insertado por la Etapa 0; además, las escrituras de descubrimiento y persistencia podían competir por SQLite.

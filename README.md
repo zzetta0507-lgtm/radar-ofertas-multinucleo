@@ -22,9 +22,20 @@ almacenan en SQLite y el sitio público consume JSON estático desde `web/data/`
 - [Cambios de diseño](docs/cambios-diseno.md)
 - [Bitácora de IA](docs/bitacora-ia.md)
 
-El catálogo se descubre dinámicamente desde OpenCritic y Steam. El flujo de este
-hito captura metadatos, ratings y plataformas; todavía no integra fuentes de
-precios, Metacritic ni How Long To Beat.
+El catálogo se descubre dinámicamente desde OpenCritic y Steam. El pipeline
+consulta precios en Steam, Epic Games Store, GOG, Eneba y GamersGate; CheapShark
+aporta ofertas de Humble Store y Green Man Gaming. Las observaciones e historial
+se guardan en SQLite y se publican en `web/data/`; las fuentes con errores
+conservan su último precio conocido y se marcan como desactualizadas.
+
+`store_sources` en `config.json` controla las fuentes de precios. GitHub Actions
+ejecuta el pipeline cada 15 minutos. La web vuelve a consultar catálogo y
+métricas cada 30 segundos, y ofrece ofertas recientes de CheapShark en el detalle
+de cada juego cuando hay conexión. Los precios se muestran en CRC por defecto y
+se convierten con el tipo de cambio de Open ER-API (510 CRC/USD como respaldo);
+el selector cambia también los gráficos a USD. La interfaz solo marca descuentos
+activos cuando el precio actual es menor que el precio regular, y señala datos
+como desactualizados después de 24 horas o ante un fallo de consulta en vivo.
 
 ## Ejecutar el pipeline
 

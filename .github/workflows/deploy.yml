@@ -4,7 +4,7 @@ on:
   push:
     branches: ["main"]
   schedule:
-    - cron: "0 12 * * *"
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -18,7 +18,6 @@ concurrency:
 
 jobs:
   build-and-deploy:
-    if: github.actor != 'github-actions[bot]'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -49,6 +48,7 @@ jobs:
           git add web/data/
           if ! git diff --cached --quiet; then
             git commit -m "Actualizar datos publicados del radar"
+            git pull --rebase origin main
             git push
           fi
 
