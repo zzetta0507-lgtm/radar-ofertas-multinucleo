@@ -1,34 +1,34 @@
 {
-  "generatedAt": "2026-11-17T03:07:01.6799979+00:00",
-  "lastRunAt": "2026-11-17T02:50:49.649612+00:00",
+  "generatedAt": "2026-11-17T03:47:17.0750235+00:00",
+  "lastRunAt": "2026-11-17T03:31:04.4145996+00:00",
   "mode": "Parallel",
-  "durationMs": 972030.8121,
+  "durationMs": 972661.0821,
   "unmatchedGames": 4,
-  "uncertainMatches": 153,
+  "uncertainMatches": 152,
   "stageDurations": [
     {
       "name": "Descubrimiento",
-      "durationMs": 903813.8655
+      "durationMs": 904060.909
     },
     {
       "name": "Descarga",
-      "durationMs": 971542.7916
+      "durationMs": 971548.4758
     },
     {
       "name": "An\u00E1lisis",
-      "durationMs": 971538.5869
+      "durationMs": 971542.4126
     },
     {
       "name": "Emparejamiento",
-      "durationMs": 971540.0914
+      "durationMs": 971557.4736
     },
     {
       "name": "Persistencia",
-      "durationMs": 971539.7909
+      "durationMs": 971558.5746
     },
     {
       "name": "Publicaci\u00F3n",
-      "durationMs": 971620.5554
+      "durationMs": 971895.3408
     }
   ],
   "requestsBySite": [
@@ -41,9 +41,9 @@
     },
     {
       "site": "Eneba",
-      "successful": 173,
+      "successful": 284,
       "retried": 0,
-      "failed": 788,
+      "failed": 677,
       "total": 961
     },
     {
@@ -90,9 +90,9 @@
     },
     {
       "site": "Steam",
-      "successful": 966,
+      "successful": 956,
       "retried": 0,
-      "failed": 0,
+      "failed": 10,
       "total": 966
     }
   ]
