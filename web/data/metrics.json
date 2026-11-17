@@ -1,37 +1,44 @@
 {
-  "generatedAt": "2026-11-16T23:34:38.692328+00:00",
-  "lastRunAt": "2026-11-16T23:34:31.5975293+00:00",
+  "generatedAt": "2026-11-17T00:04:20.5646832+00:00",
+  "lastRunAt": "2026-11-16T23:48:04.2256371+00:00",
   "mode": "Parallel",
-  "durationMs": 7095.9896,
+  "durationMs": 976339.8108,
   "unmatchedGames": 4,
-  "uncertainMatches": 50,
+  "uncertainMatches": 147,
   "stageDurations": [
     {
       "name": "Descubrimiento",
-      "durationMs": 6959.2802
+      "durationMs": 908220.028
     },
     {
       "name": "Descarga",
-      "durationMs": 6870.0701
+      "durationMs": 975678.3925
     },
     {
       "name": "An\u00E1lisis",
-      "durationMs": 6861.6153
+      "durationMs": 975672.3442
     },
     {
       "name": "Emparejamiento",
-      "durationMs": 6860.5854
+      "durationMs": 975676.5445
     },
     {
       "name": "Persistencia",
-      "durationMs": 6858.8832
+      "durationMs": 975676.946
     },
     {
       "name": "Publicaci\u00F3n",
-      "durationMs": 6963.1083
+      "durationMs": 975781.9617
     }
   ],
   "requestsBySite": [
+    {
+      "site": "GamersGate",
+      "successful": 964,
+      "retried": 0,
+      "failed": 0,
+      "total": 964
+    },
     {
       "site": "OpenCritic",
       "successful": 1007,
@@ -41,10 +48,10 @@
     },
     {
       "site": "Steam",
-      "successful": 6,
+      "successful": 929,
       "retried": 0,
-      "failed": 0,
-      "total": 6
+      "failed": 40,
+      "total": 969
     }
   ]
 }
