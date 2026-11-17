@@ -39,5 +39,4 @@ Este documento registra cambios de diseño y distingue decisiones implementadas 
 
 ## Hito 1: análisis teórico de rendimiento
 
-**Pendiente de redacción manual por el equipo.**  
-Esta sección se deja intencionalmente sin fórmulas evaluadas, cifras ni predicciones generadas con IA. El equipo incorporará aquí su análisis teórico y sus cálculos manuales.
+En una computadora con un procesador estándar y un catálogo de 500 juegos consultando múltiples fuentes por cada uno (dando un total de unas 3,500 solicitudes), nuestra primera suposición era que el cuello de botella iba a ser la red, y que por el tiempo de espera al recibir cada respuesta el procesador se pasaría casi todo el rato inactivo. En el modo secuencial pensamos que tardaría alrededor de 30 minutos —tomando en cuenta medio segundo por consulta— debido a que procesa todo uno por uno. En cambio, esperábamos que al descargar varias páginas a la vez los tiempos de espera bajarían drásticamente, y creíamos que un diseño paralelo escalaría de forma proporcional a los núcleos físicos del dispositivo, realizando los procesos entre 4 y 5 veces más rápido comparado con el método secuencial.
