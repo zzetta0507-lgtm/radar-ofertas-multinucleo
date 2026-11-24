@@ -1,34 +1,34 @@
 {
-  "generatedAt": "2026-11-23T20:39:28.1840205+00:00",
-  "lastRunAt": "2026-11-23T20:15:07.4143535+00:00",
+  "generatedAt": "2026-11-24T05:15:01.8130284+00:00",
+  "lastRunAt": "2026-11-24T04:50:48.9321983+00:00",
   "mode": "Parallel",
-  "durationMs": 1460769.9944,
-  "unmatchedGames": 1,
-  "uncertainMatches": 153,
+  "durationMs": 1452881.3135,
+  "unmatchedGames": 3,
+  "uncertainMatches": 159,
   "stageDurations": [
     {
       "name": "Descubrimiento",
-      "durationMs": 1285768.488
+      "durationMs": 1231586.8012
     },
     {
       "name": "Descarga",
-      "durationMs": 1353385.8202
+      "durationMs": 1298298.5091
     },
     {
       "name": "An\u00E1lisis",
-      "durationMs": 1353380.7637
+      "durationMs": 1298292.2983
     },
     {
       "name": "Emparejamiento",
-      "durationMs": 1353382.8279
+      "durationMs": 1298304.9224
     },
     {
       "name": "Persistencia",
-      "durationMs": 1353382.9827
+      "durationMs": 1298305.7274
     },
     {
       "name": "Publicaci\u00F3n",
-      "durationMs": 1354079.1792
+      "durationMs": 1299403.427
     }
   ],
   "requestsBySite": [
@@ -41,73 +41,73 @@
     },
     {
       "site": "Eneba",
-      "successful": 283,
+      "successful": 219,
       "retried": 0,
-      "failed": 1644,
-      "total": 1927
+      "failed": 1696,
+      "total": 1915
     },
     {
       "site": "Epic Games Store",
       "successful": 0,
       "retried": 0,
-      "failed": 1927,
-      "total": 1927
+      "failed": 1915,
+      "total": 1915
     },
     {
       "site": "Fanatical",
       "successful": 0,
       "retried": 0,
-      "failed": 963,
-      "total": 963
+      "failed": 957,
+      "total": 957
     },
     {
       "site": "GameBillet",
       "successful": 0,
       "retried": 0,
-      "failed": 963,
-      "total": 963
+      "failed": 957,
+      "total": 957
     },
     {
       "site": "GamersGate",
-      "successful": 964,
+      "successful": 958,
       "retried": 0,
-      "failed": 963,
-      "total": 1927
+      "failed": 957,
+      "total": 1915
     },
     {
       "site": "Gamesplanet",
       "successful": 0,
       "retried": 0,
-      "failed": 963,
-      "total": 963
+      "failed": 957,
+      "total": 957
     },
     {
       "site": "GOG",
-      "successful": 959,
+      "successful": 949,
       "retried": 0,
-      "failed": 968,
-      "total": 1927
+      "failed": 966,
+      "total": 1915
     },
     {
       "site": "Green Man Gaming",
       "successful": 0,
       "retried": 0,
-      "failed": 963,
-      "total": 963
+      "failed": 957,
+      "total": 957
     },
     {
       "site": "Humble Store",
       "successful": 0,
       "retried": 0,
-      "failed": 963,
-      "total": 963
+      "failed": 957,
+      "total": 957
     },
     {
       "site": "IndieGala",
       "successful": 0,
       "retried": 0,
-      "failed": 963,
-      "total": 963
+      "failed": 957,
+      "total": 957
     },
     {
       "site": "OpenCritic",
@@ -118,17 +118,17 @@
     },
     {
       "site": "Steam",
-      "successful": 1256,
+      "successful": 1200,
       "retried": 0,
-      "failed": 1060,
-      "total": 2316
+      "failed": 1055,
+      "total": 2255
     },
     {
       "site": "WinGameStore",
       "successful": 0,
       "retried": 0,
-      "failed": 963,
-      "total": 963
+      "failed": 957,
+      "total": 957
     }
   ]
 }
