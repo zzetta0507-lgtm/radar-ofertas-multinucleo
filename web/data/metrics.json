@@ -1,34 +1,34 @@
 {
-  "generatedAt": "2026-11-27T21:12:00.5504053+00:00",
-  "lastRunAt": "2026-11-27T20:47:42.2303707+00:00",
+  "generatedAt": "2026-11-28T03:32:42.3701402+00:00",
+  "lastRunAt": "2026-11-28T03:08:28.5163169+00:00",
   "mode": "Parallel",
-  "durationMs": 1458320.3988,
+  "durationMs": 1453854.1204,
   "unmatchedGames": 4,
   "uncertainMatches": 147,
   "stageDurations": [
     {
       "name": "Descubrimiento",
-      "durationMs": 1213951.3799
+      "durationMs": 1227584.166
     },
     {
       "name": "Descarga",
-      "durationMs": 1281199.9592
+      "durationMs": 1295079.767
     },
     {
       "name": "An\u00E1lisis",
-      "durationMs": 1281195.0418
+      "durationMs": 1295075.703
     },
     {
       "name": "Emparejamiento",
-      "durationMs": 1281196.7199
+      "durationMs": 1295078.5578
     },
     {
       "name": "Persistencia",
-      "durationMs": 1281197.453
+      "durationMs": 1295079.0409
     },
     {
       "name": "Publicaci\u00F3n",
-      "durationMs": 1282553.03
+      "durationMs": 1296168.7738
     }
   ],
   "requestsBySite": [
@@ -41,9 +41,9 @@
     },
     {
       "site": "Eneba",
-      "successful": 221,
+      "successful": 222,
       "retried": 0,
-      "failed": 1670,
+      "failed": 1669,
       "total": 1891
     },
     {
@@ -83,9 +83,9 @@
     },
     {
       "site": "GOG",
-      "successful": 937,
+      "successful": 939,
       "retried": 0,
-      "failed": 954,
+      "failed": 952,
       "total": 1891
     },
     {
@@ -118,10 +118,10 @@
     },
     {
       "site": "Steam",
-      "successful": 1182,
+      "successful": 1198,
       "retried": 0,
-      "failed": 1043,
-      "total": 2225
+      "failed": 1042,
+      "total": 2240
     },
     {
       "site": "WinGameStore",
